@@ -1,0 +1,212 @@
+# SURF Research Cloud component — NVIDIA Isaac Sim / Lab / Arena
+#
+---
+- name: NVIDIA Isaac Sim / Lab / Arena container workstation
+  hosts: localhost
+  connection: local
+  become: true
+
+  vars:
+    isaac_option: "lab"             # "sim" | "lab" | "arena"
+
+    # --- Driver pin --------------------------------------------
+    manage_nvidia_driver: true        # false = use drivers from CUDA component
+    nvidia_driver_branch: "580"       # R580 production branch (validated for A10/Ampere)
+    nvidia_driver_pin_glob: "580.*"   # apt preference pins to this branch (any 580.x)
+    nvidia_driver_apt_version: ""     # optional exact apt version (e.g. 580.95.05-0ubuntu1); empty = metapackage (latest 580)
+
+    # Pinned by DIGEST
+    image_sim: "nvcr.io/nvidia/isaac-sim@sha256:c3e7bef5b2bfdb9972807c34195206078372bf8c6cff79716be130a3fe3e9ce9"
+    image_lab: "nvcr.io/nvidia/isaac-lab@sha256:970621075d00059c309f847fa835709de3fa634537407a7009c586c97893d218"
+
+    # Persistent data volume (survives a workspace rebuild):
+    data_root: "/data/disk-name"
+    workspace_user: "{{ ansible_user_id }}"
+
+    # Streaming: public IP or e.g. a WireGuard tunnel IP.
+    isaacsim_host: "127.0.0.1"
+    signal_port: 49100
+    stream_port: 47998
+
+    # NGC API key via a SURF collaboration secret (Vault) as the var `ngc_api_key`.
+
+  handlers:
+    - name: Restart docker
+      ansible.builtin.systemd: { name: docker, state: restarted }
+
+  tasks:
+    # ---------------------------------------------------- 0. NVIDIA driver R580 pin
+    # Runs AFTER the SURF CUDA component. Goal: put the driver on the R580 branch
+    # and hold it, so a rebuild/`apt upgrade` does not pull it to 590+.
+    - name: Get current NVIDIA driver version
+      ansible.builtin.command: nvidia-smi --query-gpu=driver_version --format=csv,noheader
+      register: nvidia_current
+      changed_when: false
+      failed_when: false
+      when: manage_nvidia_driver | bool
+
+    - name: Release existing holds (allow driver change)
+      ansible.builtin.command: >-
+        apt-mark unhold cuda-drivers-{{ nvidia_driver_branch }} cuda-drivers nvidia-driver-{{ nvidia_driver_branch }}
+      changed_when: false
+      failed_when: false
+      when: manage_nvidia_driver | bool
+
+    - name: Purge the old driver if it is NOT on the R580 branch (downgrade requires purge)
+      ansible.builtin.shell: |
+        apt-get remove --purge -y '^nvidia-.*' 'cuda-drivers*' 'libnvidia-*'
+        apt-get autoremove -y
+      args: { executable: /bin/bash }
+      when:
+        - manage_nvidia_driver | bool
+        - nvidia_current.stdout is defined
+        - nvidia_current.stdout | length > 0
+        - not nvidia_current.stdout.startswith(nvidia_driver_branch)
+
+    - name: Install the R580 driver (metapackage from the NVIDIA CUDA repo)
+      ansible.builtin.apt:
+        name: "cuda-drivers-{{ nvidia_driver_branch }}{{ ('=' + nvidia_driver_apt_version) if nvidia_driver_apt_version else '' }}"
+        state: present
+        update_cache: true
+        allow_downgrade: true
+      register: nvidia_install
+      when: manage_nvidia_driver | bool
+
+    - name: Hold the driver (block automatic upgrades)
+      ansible.builtin.command: "apt-mark hold cuda-drivers-{{ nvidia_driver_branch }}"
+      register: nvidia_hold
+      changed_when: "'already set on hold' not in nvidia_hold.stdout and 'already set to hold' not in nvidia_hold.stdout"
+      when: manage_nvidia_driver | bool
+
+    - name: Apt preference — prefer R580, hard-block 590
+      ansible.builtin.copy:
+        dest: /etc/apt/preferences.d/nvidia-pin-580
+        mode: "0644"
+        content: |
+          Package: *nvidia*
+          Pin: version {{ nvidia_driver_pin_glob }}
+          Pin-Priority: 1001
+
+          Package: cuda-drivers-590 nvidia-driver-590
+          Pin: version *
+          Pin-Priority: -1
+      when: manage_nvidia_driver | bool
+
+    - name: Report that a reboot is needed to load the new driver
+      ansible.builtin.debug:
+        msg: >-
+          NVIDIA driver changed. The running kernel module only becomes R580 after a reboot;
+          isaac.service comes up automatically on the next boot (Restart=on-failure).
+      when:
+        - manage_nvidia_driver | bool
+        - nvidia_install is defined
+        - nvidia_install.changed
+
+    # ------------------------------------------------------------------ 1. Docker Engine
+    - name: Keyrings directory
+      ansible.builtin.file: { path: /etc/apt/keyrings, state: directory, mode: "0755" }
+
+    - name: Docker GPG key
+      ansible.builtin.get_url:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        dest: /etc/apt/keyrings/docker.asc
+        mode: "0644"
+
+    - name: Docker apt repo (official CE, not Canonical's docker.io)
+      ansible.builtin.apt_repository:
+        repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+        filename: docker
+
+    - name: Install Docker CE + compose plugin
+      ansible.builtin.apt:
+        name: [docker-ce, docker-ce-cli, containerd.io, docker-buildx-plugin, docker-compose-plugin]
+        update_cache: true
+
+    - name: Docker enabled + started
+      ansible.builtin.systemd: { name: docker, enabled: true, state: started }
+
+    - name: Add workspace user to the docker group
+      ansible.builtin.user: { name: "{{ workspace_user }}", groups: docker, append: true }
+
+    # ------------------------------------------------------- 2. NVIDIA Container Toolkit
+    - name: Toolkit GPG key + apt repo
+      ansible.builtin.shell: |
+        curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+          | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+        curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+          | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+          > /etc/apt/sources.list.d/nvidia-container-toolkit.list
+      args:
+        executable: /bin/bash
+        creates: /etc/apt/sources.list.d/nvidia-container-toolkit.list
+
+    - name: Install nvidia-container-toolkit
+      ansible.builtin.apt: { name: nvidia-container-toolkit, update_cache: true }
+
+    - name: Configure the nvidia-ctk runtime for docker
+      ansible.builtin.command: nvidia-ctk runtime configure --runtime=docker
+      notify: Restart docker
+
+    - name: Flush handlers (restart docker before the GPU check)
+      ansible.builtin.meta: flush_handlers
+
+    - name: Verify GPU passthrough inside a container
+      ansible.builtin.command: docker run --rm --runtime=nvidia --gpus all ubuntu nvidia-smi
+      register: gpu_check
+      changed_when: false
+      failed_when: false        # may fail right after a driver change without reboot, isaac.service recovers on the next boot
+
+    - name: GPU passthrough result
+      ansible.builtin.debug:
+        msg: "{{ 'GPU passthrough OK' if gpu_check.rc == 0 else 'GPU check failed (rc=' ~ gpu_check.rc ~ ') — likely a reboot is needed after the driver change; check after the next boot.' }}"
+
+    # ------------------------------------------------------------------ 3. NGC login (secret)
+    - name: Log in to nvcr.io (key via Vault secret)
+      ansible.builtin.shell: "echo '{{ ngc_api_key }}' | docker login nvcr.io -u '$oauthtoken' --password-stdin"
+      args: { executable: /bin/bash }
+      no_log: true
+      when: ngc_api_key is defined and (ngc_api_key | length > 0)
+
+    # ------------------------------------------------------------ 4. Select + pull image
+    - name: Arena not supported yet (no pinned image exists)
+      ansible.builtin.fail:
+        msg: >-
+          isaac_option=arena has no pre-built image yet (build + digest-pin it first).
+          Use 'sim' or 'lab' for now.
+      when: isaac_option == 'arena'
+
+    - name: Select image
+      ansible.builtin.set_fact:
+        isaac_image: "{{ image_sim if isaac_option == 'sim' else image_lab }}"
+
+    - name: Persistent cache/data directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+        owner: "1234"
+        group: "1234"
+        recurse: true
+      loop:
+        - "{{ data_root }}/isaac-sim/cache/main"
+        - "{{ data_root }}/isaac-sim/cache/computecache"
+        - "{{ data_root }}/isaac-sim/config"
+        - "{{ data_root }}/isaac-sim/data"
+        - "{{ data_root }}/isaac-sim/logs"
+      when: isaac_option == 'sim'
+
+    - name: Pull the pinned image
+      ansible.builtin.command: "docker pull {{ isaac_image }}"
+
+    # ------------------------------------------------------------------ 5. systemd unit
+    - name: Install the Isaac systemd unit
+      ansible.builtin.template:
+        src: templates/isaac-container.service.j2
+        dest: /etc/systemd/system/isaac.service
+        mode: "0644"
+
+    - name: Enable + start isaac.service
+      ansible.builtin.systemd:
+        name: isaac.service
+        enabled: true
+        state: started
+        daemon_reload: true

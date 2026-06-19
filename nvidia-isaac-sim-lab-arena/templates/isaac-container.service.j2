@@ -1,0 +1,32 @@
+# systemd unit for the Isaac container (Project Paradaim).
+# Installed by Ansible as /etc/systemd/system/isaac.service.
+# sim option : starts the WebRTC stream (runheadless) -> connect with the client.
+# lab option : runs idle; train via  docker exec -it isaac ./isaaclab.sh -p <script> ...
+[Unit]
+Description=Isaac {{ isaac_option }} container (Project Paradaim)
+After=docker.service
+Requires=docker.service
+
+[Service]
+Restart=on-failure
+RestartSec=5
+ExecStartPre=-/usr/bin/docker rm -f isaac
+{% if isaac_option == 'sim' %}
+ExecStart=/usr/bin/docker run --name isaac --gpus all --network=host \
+    -e ACCEPT_EULA=Y -e PRIVACY_CONSENT=Y \
+    -e ISAACSIM_HOST={{ isaacsim_host }} \
+    -e ISAACSIM_SIGNAL_PORT={{ signal_port }} \
+    -e ISAACSIM_STREAM_PORT={{ stream_port }} \
+    -v {{ data_root }}/isaac-sim/cache/main:/isaac-sim/.cache:rw \
+    -v {{ data_root }}/isaac-sim/config:/isaac-sim/.nvidia-omniverse/config:rw \
+    -v {{ data_root }}/isaac-sim/data:/isaac-sim/.local/share/ov/data:rw \
+    -u 1234:1234 --entrypoint bash {{ isaac_image }} -c "./runheadless.sh -v"
+{% else %}
+ExecStart=/usr/bin/docker run --name isaac --gpus all --network=host \
+    -e ACCEPT_EULA=Y -e PRIVACY_CONSENT=Y \
+    --entrypoint bash {{ isaac_image }} -c "sleep infinity"
+{% endif %}
+ExecStop=/usr/bin/docker stop isaac
+
+[Install]
+WantedBy=multi-user.target
