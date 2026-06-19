@@ -15,11 +15,11 @@ ExecStartPre=-/usr/bin/docker rm -f isaac
 ExecStart=/usr/bin/docker run --name isaac --gpus all --network=host \
     -e ACCEPT_EULA=Y -e PRIVACY_CONSENT=Y \
     -e ISAACSIM_HOST={{ isaacsim_host }} \
-    -e ISAACSIM_SIGNAL_PORT={{ signal_port }} \
-    -e ISAACSIM_STREAM_PORT={{ stream_port }} \
-    -v {{ data_root }}/isaac-sim/cache/main:/isaac-sim/.cache:rw \
-    -v {{ data_root }}/isaac-sim/config:/isaac-sim/.nvidia-omniverse/config:rw \
-    -v {{ data_root }}/isaac-sim/data:/isaac-sim/.local/share/ov/data:rw \
+    -e ISAACSIM_SIGNAL_PORT={{ isaac_signal_port }} \
+    -e ISAACSIM_STREAM_PORT={{ isaac_stream_port }} \
+    -v {{ isaac_data_root }}/isaac-sim/cache/main:/isaac-sim/.cache:rw \
+    -v {{ isaac_data_root }}/isaac-sim/config:/isaac-sim/.nvidia-omniverse/config:rw \
+    -v {{ isaac_data_root }}/isaac-sim/data:/isaac-sim/.local/share/ov/data:rw \
     -u 1234:1234 --entrypoint bash {{ isaac_image }} -c "./runheadless.sh -v"
 {% else %}
 ExecStart=/usr/bin/docker run --name isaac --gpus all --network=host \

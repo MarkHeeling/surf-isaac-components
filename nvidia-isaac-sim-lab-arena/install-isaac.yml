@@ -20,13 +20,13 @@
     image_lab: "nvcr.io/nvidia/isaac-lab@sha256:970621075d00059c309f847fa835709de3fa634537407a7009c586c97893d218"
 
     # Persistent data volume (survives a workspace rebuild):
-    data_root: "/data/disk-name"
+    isaac_data_root: "/data/disk-name"
     workspace_user: "{{ ansible_user_id }}"
 
     # Streaming: public IP or e.g. a WireGuard tunnel IP.
     isaacsim_host: "127.0.0.1"
-    signal_port: 49100
-    stream_port: 47998
+    isaac_signal_port: 49100
+    isaac_stream_port: 47998
 
     # NGC API key via a SURF collaboration secret (Vault) as the var `ngc_api_key`.
 
@@ -187,11 +187,11 @@
         group: "1234"
         recurse: true
       loop:
-        - "{{ data_root }}/isaac-sim/cache/main"
-        - "{{ data_root }}/isaac-sim/cache/computecache"
-        - "{{ data_root }}/isaac-sim/config"
-        - "{{ data_root }}/isaac-sim/data"
-        - "{{ data_root }}/isaac-sim/logs"
+        - "{{ isaac_data_root }}/isaac-sim/cache/main"
+        - "{{ isaac_data_root }}/isaac-sim/cache/computecache"
+        - "{{ isaac_data_root }}/isaac-sim/config"
+        - "{{ isaac_data_root }}/isaac-sim/data"
+        - "{{ isaac_data_root }}/isaac-sim/logs"
       when: isaac_option == 'sim'
 
     - name: Pull the pinned image

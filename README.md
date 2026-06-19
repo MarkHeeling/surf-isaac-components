@@ -27,10 +27,10 @@ SURF Research Cloud **components** (Ansible playbooks) for Isaac Sim / Lab / Are
 |---|---|---|
 | `isaac_option` | `lab` | Which variant to deploy: `sim` / `lab` / `arena` |
 | `image_sim` / `image_lab` | digests | Container image per option. Overridable → roll out a newer build without editing the playbook |
-| `data_root` | `/data/disk-name` | Mount point of the **persistent data volume** (survives a rebuild) |
+| `isaac_data_root` | `/data/storage` | Mount point of the **persistent data volume** (survives a rebuild) |
 | `isaacsim_host` | `127.0.0.1` | Address the streaming client connects to: the workspace's public IP (or e.g. a WireGuard tunnel IP) |
-| `signal_port` | `49100` | WebRTC **signaling** (TCP) — establishes the connection between client and workstation |
-| `stream_port` | `47998` | WebRTC **media** (UDP) — carries the video stream itself |
+| `isaac_signal_port` | `49100` | WebRTC **signaling** (TCP) — establishes the connection between client and workstation |
+| `isaac_stream_port` | `47998` | WebRTC **media** (UDP) — carries the video stream itself |
 | `manage_nvidia_driver` | `true` | Installs and pins the NVIDIA driver to the version recommended by NVIDIA. `false` = leave the CUDA component's driver as-is |
 | `nvidia_driver_branch` | `580` | Driver branch to install. **R580** is validated by NVIDIA for the A10 (Ampere) with Isaac Sim 6.0 |
 | `nvidia_driver_pin_glob` | `580.*` | Keeps the driver on this branch (any 580.x) and blocks a jump to a newer branch (590+) |
