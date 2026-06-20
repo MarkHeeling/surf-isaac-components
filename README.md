@@ -40,10 +40,26 @@ SURF Research Cloud **components** (Ansible playbooks) for Isaac Sim / Lab / Are
 
 **Catalog item order:** `… → CUDA component → this component`
 
+### Streaming and network access
+For viewing the Isaac Sim / Lab / Arena GUI, the container runs a **WebRTC** stream. The client connects to the workstation's public IP and receives the video stream.
+
+The client can be downloaded from NVIDIA's site: [Isaac Sim WebRTC Streaming Client](https://docs.isaacsim.omniverse.nvidia.com/latest/installation/download.html#isaac-sim-latest-release).
+
+Isaac streaming needs two ports reachable from your client:
+
+- `49100/TCP` — signaling (`isaac_signal_port`)
+- `47998/UDP` — media / video (`isaac_stream_port`)
+
+
+
+Rather than opening 49100/47998 to the public internet, you could also use **WireGuard** to connect your client to the workstation's private network. The ports are then reachable through the WireGuard tunnel. 
+
+For more information, see [Livestream Clients](https://docs.omniverse.nvidia.com/app_isaacsim/app_isaacsim/streaming.html).
+
 ---
 
 ## NVIDIA Omniverse asset cache
 
 > **Not built yet** — planned component.
 
-Isaac Sim/Lab loads its 3D assets (robots, environments, materials) from the cloud through Omniverse by default. In the minimal container the cache service (OmniHub) does not start, so every run fetches the assets again: slower loading and log noise.
+Isaac Sim/Lab loads its 3D assets (robots, environments, materials) from the cloud through Omniverse by default. In the minimal container the cache service (OmniHub) does not start, so every run fetches the assets again: slower loading and log noise. The Omniverse asset cache component will provide a local cache of the assets on persistent storage, so that Isaac Sim/Lab can load them from disk instead of the cloud.
