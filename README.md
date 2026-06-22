@@ -28,7 +28,7 @@ SURF Research Cloud **components** (Ansible playbooks) for Isaac Sim / Lab / Are
 | `isaac_option` | `lab` | Which variant to deploy: `sim` / `lab` / `arena` |
 | `image_sim` / `image_lab` | digests | Container image per option. Overridable → roll out a newer build without editing the playbook |
 | `isaac_data_root` | `/data/isaac-data` | Mount point of the **persistent data volume** (survives a rebuild). Must match the volume's mount path — SURF mounts it at `/data/<volume-name>`, so name the volume `isaac-data` |
-| `isaacsim_host` | `127.0.0.1` | Address the streaming client connects to: the workspace's public IP (or e.g. a WireGuard tunnel IP) |
+| `isaacsim_host` | `127.0.0.1` | Address the streaming client connects to. `127.0.0.1` only works locally — for remote streaming set it to a reachable address: easiest is SURF's **Resource** source type with value `workspace_fqdn` (auto-fills the workspace DNS name), or a WireGuard tunnel IP (e.g. `10.8.0.1`) |
 | `isaac_signal_port` | `49100` | WebRTC **signaling** (TCP) — establishes the connection between client and workstation |
 | `isaac_stream_port` | `47998` | WebRTC **media** (UDP) — carries the video stream itself |
 | `manage_nvidia_driver` | `true` | Installs and pins the NVIDIA driver to the version recommended by NVIDIA. `false` = leave the CUDA component's driver as-is |
@@ -40,6 +40,8 @@ SURF Research Cloud **components** (Ansible playbooks) for Isaac Sim / Lab / Are
 
 **Catalog item order:** `… → CUDA component → this component`
 
+> **First boot:** the CUDA component installs a newer driver, so this component downgrades it to R580. The new driver only loads after a reboot — SURF does not reboot automatically. After the first provisioning, `nvidia-smi` reports a "Driver/library version mismatch"; reboot the workspace once (`sudo systemctl reboot -i`) and `isaac.service` comes up on its own.
+
 ### Streaming and network access
 For viewing the Isaac Sim / Lab / Arena GUI, the container runs a **WebRTC** stream. The client connects to the workstation's public IP and receives the video stream.
 
@@ -50,9 +52,13 @@ Isaac streaming needs two ports reachable from your client:
 - `49100/TCP` — signaling (`isaac_signal_port`)
 - `47998/UDP` — media / video (`isaac_stream_port`)
 
+There are **two alternative ways** to make the workstation reachable. Pick one — they set `isaacsim_host` to different values and are not combined:
 
+**Option A — public ports (simplest, for testing).** Open `49100/TCP` and `47998/UDP` to your client IP (`/32`) in the catalog item's access rules. Set `isaacsim_host` via the **Resource** source type with value `workspace_fqdn`, so the stream advertises the workspace's public DNS name.
 
-Rather than opening 49100/47998 to the public internet, you could also use **WireGuard** to connect your client to the workstation's private network. The ports are then reachable through the WireGuard tunnel. 
+**Option B — WireGuard (no public WebRTC ports).** Open only the WireGuard port (`51820/UDP`) and set up the tunnel manually; the client reaches the workstation over the tunnel. Set `isaacsim_host` to the tunnel IP (e.g. `10.8.0.1`, **Fixed**) so the stream is advertised on the tunnel instead of the public interface.
+
+> The value applied to `isaacsim_host` comes from the catalog item and is (re)applied on create/rebuild — a normal reboot keeps any manual change, a rebuild resets it to the catalog value.
 
 For more information, see [Livestream Clients](https://docs.omniverse.nvidia.com/app_isaacsim/app_isaacsim/streaming.html).
 

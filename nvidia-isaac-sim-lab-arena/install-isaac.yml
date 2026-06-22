@@ -23,7 +23,10 @@
     isaac_data_root: "/data/disk-name"
     workspace_user: "{{ ansible_user_id }}"
 
-    # Streaming: public IP or e.g. a WireGuard tunnel IP.
+    # Streaming host advertised to the WebRTC client. Normally set by the catalog
+    # item via the "Resource" source type (value: workspace_fqdn), which auto-fills
+    # the workspace's DNS name. For WireGuard use the tunnel IP (e.g. 10.8.0.1).
+    # 127.0.0.1 here is only a local fallback.
     isaacsim_host: "127.0.0.1"
     isaac_signal_port: 49100
     isaac_stream_port: 47998
@@ -101,6 +104,22 @@
         - manage_nvidia_driver | bool
         - nvidia_install is defined
         - nvidia_install.changed
+
+    - name: Login reminder to reboot while the pinned driver is not active
+      ansible.builtin.copy:
+        dest: /etc/update-motd.d/99-isaac-driver
+        mode: "0755"
+        content: |
+          #!/bin/sh
+          # Shown at SSH login only while the pinned R580 driver is not yet loaded.
+          # Disappears automatically once nvidia-smi works (after a reboot).
+          if ! nvidia-smi >/dev/null 2>&1; then
+            echo ""
+            echo "  [Isaac] GPU driver pinned to R580 but not loaded yet."
+            echo "  [Isaac] Reboot once to activate it"
+            echo ""
+          fi
+      when: manage_nvidia_driver | bool
 
     # ------------------------------------------------------------------ 1. Docker Engine
     - name: Keyrings directory
