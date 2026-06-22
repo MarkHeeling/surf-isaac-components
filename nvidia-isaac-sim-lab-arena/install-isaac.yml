@@ -161,11 +161,28 @@
         msg: "{{ 'GPU passthrough OK' if gpu_check.rc == 0 else 'GPU check failed (rc=' ~ gpu_check.rc ~ ') — likely a reboot is needed after the driver change; check after the next boot.' }}"
 
     # ------------------------------------------------------------------ 3. NGC login (secret)
+    - name: Ensure an NGC API key is provided
+      ansible.builtin.fail:
+        msg: >-
+          No NGC API key found. Create the 'ngc_api_key' collaboration secret
+          (Profile -> your collaboration -> Secrets) with a valid NGC key.
+      when: ngc_api_key is not defined or (ngc_api_key | length == 0)
+
     - name: Log in to nvcr.io (key via Vault secret)
-      ansible.builtin.shell: "echo '{{ ngc_api_key }}' | docker login nvcr.io -u '$oauthtoken' --password-stdin"
+      ansible.builtin.shell: "echo \"$NGC_API_KEY\" | docker login nvcr.io -u '$oauthtoken' --password-stdin"
       args: { executable: /bin/bash }
+      environment:
+        NGC_API_KEY: "{{ ngc_api_key }}"
       no_log: true
-      when: ngc_api_key is defined and (ngc_api_key | length > 0)
+      register: ngc_login
+      failed_when: false
+
+    - name: Fail clearly if the NGC login did not succeed
+      ansible.builtin.fail:
+        msg: >-
+          NGC login to nvcr.io failed (rc={{ ngc_login.rc }}). Check that the
+          'ngc_api_key' collaboration secret holds a valid NGC API key.
+      when: ngc_login.rc | default(1) != 0
 
     # ------------------------------------------------------------ 4. Select + pull image
     - name: Arena not supported yet (no pinned image exists)
