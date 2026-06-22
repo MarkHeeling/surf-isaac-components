@@ -28,6 +28,7 @@ SURF Research Cloud **components** (Ansible playbooks) for Isaac Sim / Lab / Are
 | `isaac_option` | `lab` | Which variant to deploy: `sim` / `lab` / `arena` |
 | `image_sim` / `image_lab` | digests | Container image per option. Overridable → roll out a newer build without editing the playbook |
 | `isaac_data_root` | `/data/isaac-data` | Mount point of the **persistent data volume** (survives a rebuild). Must match the volume's mount path — SURF mounts it at `/data/<volume-name>`, so name the volume `isaac-data` |
+| `scratch_root` | `/mnt/scratch` | Mount point of the **ephemeral scratch disk** (fast local NVMe, auto-added on GPU flavours, **wiped on reboot**). Holds the regenerable Omniverse/Kit caches; the unit recreates the dirs at each start |
 | `isaacsim_host` | `127.0.0.1` | Address the streaming client connects to. `127.0.0.1` only works locally — for remote streaming set it to a reachable address: easiest is SURF's **Resource** source type with value `workspace_fqdn` (auto-fills the workspace DNS name), or a WireGuard tunnel IP (e.g. `10.8.0.1`) |
 | `isaac_signal_port` | `49100` | WebRTC **signaling** (TCP) — establishes the connection between client and workstation |
 | `isaac_stream_port` | `47998` | WebRTC **media** (UDP) — carries the video stream itself |
@@ -41,6 +42,28 @@ SURF Research Cloud **components** (Ansible playbooks) for Isaac Sim / Lab / Are
 **Catalog item order:** `… → CUDA component → this component`
 
 > **First boot:** the CUDA component installs a newer driver, so this component downgrades it to R580. The new driver only loads after a reboot — SURF does not reboot automatically. After the first provisioning, `nvidia-smi` reports a "Driver/library version mismatch"; reboot the workspace once (`sudo systemctl reboot -i`) and `isaac.service` comes up on its own.
+
+### Storage layout (lab)
+Following the [Isaac Lab Docker volumes](https://isaac-sim.github.io/IsaacLab/main/source/deployment/docker.html#understanding-the-mounted-volumes), storage is split by what is worth keeping. The container runs as a non-root uid (`isaac_uid`) that owns these dirs, because the image runs as root but SURF's external volume squashes root.
+
+| Where | Container path | Why |
+|---|---|---|
+| `isaac_data_root` — **persistent** | `/workspace/isaaclab/logs` | training output / checkpoints |
+| `isaac_data_root` — **persistent** | `/workspace/isaaclab/data_storage` | user data to preserve between runs |
+| `scratch_root` — ephemeral | `/isaac-sim/kit/cache` | Kit shader/extension cache |
+| `scratch_root` — ephemeral | `/root/.cache` | OV + pip + GLCache |
+| `scratch_root` — ephemeral | `/root/.nv` | CUDA ComputeCache |
+| `scratch_root` — ephemeral | `/root/.local/share/ov` | Omniverse asset/Nucleus cache (until the asset-cache component lands) |
+| `scratch_root` — ephemeral | `/root/.nvidia-omniverse` | Omniverse logs + config |
+
+Caches on scratch cost only a slower first run after a reboot, not data loss (SURF: caches → scratch, persistent data → external volume).
+
+### Known headless warnings (cosmetic)
+The headless container logs a few harmless errors. Training (e.g. `Isaac-Cartpole-v0`) completes normally despite them:
+
+- **`OmniHub: Hub failed to launch …`** — the minimal container ships without the Omniverse asset-cache service; assets are fetched per run (resolved once the asset-cache component lands).
+- **`FileNotFoundError … pip_prebundle/packaging/__init__.py`** → `isaacsim.core.experimental.objects` / `isaacsim.asset.importer.heightmap` fail to load. A beta-image defect ([IsaacLab #5351](https://github.com/isaac-sim/IsaacLab/issues/5351)); these extensions are not used by the RL tasks.
+- **`(unhealthy)` in `docker ps`** — the image HEALTHCHECK probes a running Isaac app; in idle/headless (`sleep infinity`) it reports unhealthy while `docker exec` training works fine.
 
 ### Streaming and network access
 For viewing the Isaac Sim / Lab / Arena GUI, the container runs a **WebRTC** stream. The client connects to the workstation's public IP and receives the video stream.

@@ -19,8 +19,13 @@
     image_sim: "nvcr.io/nvidia/isaac-sim@sha256:c3e7bef5b2bfdb9972807c34195206078372bf8c6cff79716be130a3fe3e9ce9"
     image_lab: "nvcr.io/nvidia/isaac-lab@sha256:970621075d00059c309f847fa835709de3fa634537407a7009c586c97893d218"
 
-    # Persistent data volume (survives a workspace rebuild):
-    isaac_data_root: "/data/disk-name"
+    # Persistent data volume (survives a workspace rebuild). SURF mounts an
+    # external volume at /data/<volume-name>, so name the volume "isaac-data".
+    isaac_data_root: "/data/isaac-data"
+    # Ephemeral scratch: fast local NVMe, auto-added on GPU flavours, wiped on
+    # reboot. Holds the regenerable caches; the systemd unit recreates the dirs
+    # at each start. SURF guidance: caches -> scratch, persistent data -> volume.
+    scratch_root: "/mnt/scratch"
     workspace_user: "{{ ansible_user_id }}"
 
     # Streaming host advertised to the WebRTC client. Normally set by the catalog
@@ -215,20 +220,36 @@
       ansible.builtin.set_fact:
         isaac_image: "{{ image_sim if isaac_option == 'sim' else image_lab }}"
 
-    - name: Persistent cache/data directories
+    - name: Set container UID and persistent directories per option
+      ansible.builtin.set_fact:
+        # The images run as root by default. We override to a non-root uid (sim 1234,
+        # lab 1000) because SURF's persistent volume squashes root -> root cannot write
+        # to /data. This uid owns the persistent dirs (chown below) and is passed to
+        # `docker run -u` in the unit, so the three never drift.
+        isaac_uid: "{{ '1234' if isaac_option == 'sim' else '1000' }}"
+        isaac_dirs: "{{ sim_dirs if isaac_option == 'sim' else lab_dirs }}"
+      vars:
+        sim_dirs:
+          - "{{ isaac_data_root }}/isaac-sim/cache/main"
+          - "{{ isaac_data_root }}/isaac-sim/cache/computecache"
+          - "{{ isaac_data_root }}/isaac-sim/config"
+          - "{{ isaac_data_root }}/isaac-sim/data"
+          - "{{ isaac_data_root }}/isaac-sim/logs"
+        # lab: persistent = training output (logs) + user data_storage (NVIDIA's
+        # isaac-lab-data volume). The Omniverse/Kit caches are regenerable -> scratch,
+        # (re)created by the systemd unit at each start (scratch is wiped on reboot).
+        lab_dirs:
+          - "{{ isaac_data_root }}/isaac-lab/logs"          # training outputs / checkpoints
+          - "{{ isaac_data_root }}/isaac-lab/data_storage"  # user data to preserve between runs
+
+    - name: Create persistent cache/data directories
       ansible.builtin.file:
         path: "{{ item }}"
         state: directory
-        owner: "1234"
-        group: "1234"
+        owner: "{{ isaac_uid }}"
+        group: "{{ isaac_uid }}"
         recurse: true
-      loop:
-        - "{{ isaac_data_root }}/isaac-sim/cache/main"
-        - "{{ isaac_data_root }}/isaac-sim/cache/computecache"
-        - "{{ isaac_data_root }}/isaac-sim/config"
-        - "{{ isaac_data_root }}/isaac-sim/data"
-        - "{{ isaac_data_root }}/isaac-sim/logs"
-      when: isaac_option == 'sim'
+      loop: "{{ isaac_dirs }}"
 
     - name: Pull the pinned image
       ansible.builtin.command: "docker pull {{ isaac_image }}"

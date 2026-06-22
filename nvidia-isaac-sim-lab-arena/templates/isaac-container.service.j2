@@ -11,6 +11,10 @@ Requires=docker.service
 Restart=on-failure
 RestartSec=5
 ExecStartPre=-/usr/bin/docker rm -f isaac
+# The image runs as root by default; we override to a non-root uid (isaac_uid)
+# because SURF's persistent volume squashes root -> root cannot write to /data.
+# isaac_uid owns the persistent dirs (playbook chown) and is passed to `-u` here,
+# so the uid never drifts between the chown, the mounts and the container.
 {% if isaac_option == 'sim' %}
 ExecStart=/usr/bin/docker run --name isaac --gpus all --network=host \
     -e ACCEPT_EULA=Y -e PRIVACY_CONSENT=Y \
@@ -20,11 +24,25 @@ ExecStart=/usr/bin/docker run --name isaac --gpus all --network=host \
     -v {{ isaac_data_root }}/isaac-sim/cache/main:/isaac-sim/.cache:rw \
     -v {{ isaac_data_root }}/isaac-sim/config:/isaac-sim/.nvidia-omniverse/config:rw \
     -v {{ isaac_data_root }}/isaac-sim/data:/isaac-sim/.local/share/ov/data:rw \
-    -u 1234:1234 --entrypoint bash {{ isaac_image }} -c "./runheadless.sh -v"
+    -u {{ isaac_uid }}:{{ isaac_uid }} --entrypoint bash {{ isaac_image }} -c "./runheadless.sh -v"
 {% else %}
+# Persistent (external volume): training output (logs) + user data_storage. The
+# Omniverse/Kit caches are regenerable -> ephemeral scratch (fast local NVMe, wiped
+# on reboot -> recreated below). Mount paths follow the NVIDIA Isaac Lab compose.
+ExecStartPre=/usr/bin/install -d -o {{ isaac_uid }} -g {{ isaac_uid }} \
+    {{ scratch_root }}/isaac-lab/kit-cache {{ scratch_root }}/isaac-lab/cache \
+    {{ scratch_root }}/isaac-lab/compute {{ scratch_root }}/isaac-lab/ov-data \
+    {{ scratch_root }}/isaac-lab/nv-omniverse
 ExecStart=/usr/bin/docker run --name isaac --gpus all --network=host \
     -e ACCEPT_EULA=Y -e PRIVACY_CONSENT=Y \
-    --entrypoint bash {{ isaac_image }} -c "sleep infinity"
+    -v {{ isaac_data_root }}/isaac-lab/logs:/workspace/isaaclab/logs:rw \
+    -v {{ isaac_data_root }}/isaac-lab/data_storage:/workspace/isaaclab/data_storage:rw \
+    -v {{ scratch_root }}/isaac-lab/kit-cache:/isaac-sim/kit/cache:rw \
+    -v {{ scratch_root }}/isaac-lab/cache:/root/.cache:rw \
+    -v {{ scratch_root }}/isaac-lab/compute:/root/.nv:rw \
+    -v {{ scratch_root }}/isaac-lab/ov-data:/root/.local/share/ov:rw \
+    -v {{ scratch_root }}/isaac-lab/nv-omniverse:/root/.nvidia-omniverse:rw \
+    -u {{ isaac_uid }}:{{ isaac_uid }} --entrypoint bash {{ isaac_image }} -c "sleep infinity"
 {% endif %}
 ExecStop=/usr/bin/docker stop isaac
 
