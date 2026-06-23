@@ -239,7 +239,7 @@
     - name: Build the full-isaac image from source (Arena -> Lab + full Sim)
       ansible.builtin.shell: |
         set -e
-        # Arena's submodules use SSH URLs; rewrite to HTTPS so no SSH key is needed.
+        # Arena submodules use SSH URLs; rewrite to HTTPS (no SSH key needed).
         git config --global url."https://github.com/".insteadOf "git@github.com:"
         if [ ! -d "{{ arena_src_dir }}/.git" ]; then
           git clone "{{ arena_repo }}" "{{ arena_src_dir }}"
