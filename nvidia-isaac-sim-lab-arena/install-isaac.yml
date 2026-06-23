@@ -7,7 +7,7 @@
   become: true
 
   vars:
-    isaac_option: "lab"             # "sim" | "lab" | "arena"
+    isaac_option: "lab"             # "full-isaac" | "lab" | "sim" | "arena"
 
     # --- Driver pin --------------------------------------------
     manage_nvidia_driver: true        # false = use drivers from CUDA component
@@ -18,6 +18,16 @@
     # Pinned by DIGEST
     image_sim: "nvcr.io/nvidia/isaac-sim@sha256:c3e7bef5b2bfdb9972807c34195206078372bf8c6cff79716be130a3fe3e9ce9"
     image_lab: "nvcr.io/nvidia/isaac-lab@sha256:970621075d00059c309f847fa835709de3fa634537407a7009c586c97893d218"
+    # full-isaac: the "everything" image (full Isaac Sim editor + Isaac Lab + Arena).
+    # Default = build from source on the workstation at provisioning (build-on-deploy,
+    # ~15 min) so the catalog item is shareable without a registry. Optionally set
+    # image_full to a registry digest to pull a pre-built image instead of building.
+    image_full: ""    # optional registry override; empty = build from source
+
+    # --- full-isaac build-on-deploy (only used when image_full is empty) -----------
+    arena_repo: "https://github.com/isaac-sim/IsaacLab-Arena.git"
+    arena_ref: "baa1b119002bb0e53a1ba6dba1e7d5693222cc4f"   # validated commit (main, 2026-06-23); Arena 0.2 = Isaac Sim 6.0 / Lab 3.0
+    arena_src_dir: "/opt/IsaacLab-Arena"
 
     # Persistent data volume (survives a workspace rebuild). SURF mounts an
     # external volume at /data/<volume-name>, so name the volume "isaac-data".
@@ -209,25 +219,58 @@
       when: ngc_login.rc | default(1) != 0
 
     # ------------------------------------------------------------ 4. Select + pull image
-    - name: Arena not supported yet (no pinned image exists)
+    - name: Arena (standalone) not supported yet (no pre-built image)
       ansible.builtin.fail:
         msg: >-
-          isaac_option=arena has no pre-built image yet (build + digest-pin it first).
-          Use 'sim' or 'lab' for now.
+          isaac_option=arena has no pre-built image yet. Arena IS included in the
+          'full-isaac' option (built from source) -> use that, or 'sim' / 'lab'.
       when: isaac_option == 'arena'
+
+    # full-isaac with no registry image_full -> build the Arena image from source here
+    # (it pulls in Isaac Lab + the full Isaac Sim). ~15 min; uses the NGC login above.
+    - name: Install git for the full-isaac source build
+      ansible.builtin.apt:
+        name: [git, git-lfs]
+        update_cache: true
+      when:
+        - isaac_option == 'full-isaac'
+        - image_full | length == 0
+
+    - name: Build the full-isaac image from source (Arena -> Lab + full Sim)
+      ansible.builtin.shell: |
+        set -e
+        # Arena's submodules use SSH URLs; rewrite to HTTPS so no SSH key is needed.
+        git config --global url."https://github.com/".insteadOf "git@github.com:"
+        if [ ! -d "{{ arena_src_dir }}/.git" ]; then
+          git clone "{{ arena_repo }}" "{{ arena_src_dir }}"
+        fi
+        cd "{{ arena_src_dir }}"
+        git fetch --all --tags --prune
+        git checkout "{{ arena_ref }}"
+        git submodule update --init --recursive
+        docker build --pull --build-arg WORKDIR=/workspaces/isaaclab_arena \
+          -t isaaclab_arena:latest -f docker/Dockerfile.isaaclab_arena .
+      args:
+        executable: /bin/bash
+      when:
+        - isaac_option == 'full-isaac'
+        - image_full | length == 0
 
     - name: Select image
       ansible.builtin.set_fact:
-        isaac_image: "{{ image_sim if isaac_option == 'sim' else image_lab }}"
+        # full-isaac: a registry image_full if given, otherwise the locally built tag.
+        isaac_image: "{{ image_sim if isaac_option == 'sim' else (image_lab if isaac_option == 'lab' else (image_full if image_full | length > 0 else 'isaaclab_arena:latest')) }}"
 
     - name: Set container UID and persistent directories per option
       ansible.builtin.set_fact:
         # The images run as root by default. We override to a non-root uid (sim 1234,
-        # lab 1000) because SURF's persistent volume squashes root -> root cannot write
-        # to /data. This uid owns the persistent dirs (chown below) and is passed to
-        # `docker run -u` in the unit, so the three never drift.
+        # lab / full-isaac 1000) because SURF's persistent volume squashes root -> root
+        # cannot write to /data. This uid owns the persistent dirs (chown below) and is
+        # passed to `docker run -u` in the unit, so the three never drift.
+        # NB full-isaac is source-built: verify its uid + in-container paths against the
+        # built image (probe with `docker inspect` / `ls`, like the lab option).
         isaac_uid: "{{ '1234' if isaac_option == 'sim' else '1000' }}"
-        isaac_dirs: "{{ sim_dirs if isaac_option == 'sim' else lab_dirs }}"
+        isaac_dirs: "{{ sim_dirs if isaac_option == 'sim' else (full_dirs if isaac_option == 'full-isaac' else lab_dirs) }}"
       vars:
         sim_dirs:
           - "{{ isaac_data_root }}/isaac-sim/cache/main"
@@ -241,6 +284,11 @@
         lab_dirs:
           - "{{ isaac_data_root }}/isaac-lab/logs"          # training outputs / checkpoints
           - "{{ isaac_data_root }}/isaac-lab/data_storage"  # user data to preserve between runs
+        # full-isaac (Arena source build): persistent logs + data_storage. The /data
+        # paths are ours; the in-container targets are set in the unit (verify after build).
+        full_dirs:
+          - "{{ isaac_data_root }}/full-isaac/logs"
+          - "{{ isaac_data_root }}/full-isaac/data_storage"
 
     - name: Create persistent cache/data directories
       ansible.builtin.file:
@@ -251,8 +299,9 @@
         recurse: true
       loop: "{{ isaac_dirs }}"
 
-    - name: Pull the pinned image
+    - name: Pull the pinned image (skipped when full-isaac builds locally)
       ansible.builtin.command: "docker pull {{ isaac_image }}"
+      when: not (isaac_option == 'full-isaac' and image_full | length == 0)
 
     # ------------------------------------------------------------------ 5. systemd unit
     - name: Install the Isaac systemd unit

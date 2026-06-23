@@ -1,7 +1,8 @@
 # systemd unit for the Isaac container (Project Paradaim).
 # Installed by Ansible as /etc/systemd/system/isaac.service.
-# sim option : starts the WebRTC stream (runheadless) -> connect with the client.
-# lab option : runs idle; train via  docker exec -it isaac ./isaaclab.sh -p <script> ...
+# sim option       : starts the WebRTC stream (runheadless) -> connect with the client.
+# lab / full-isaac : run idle; train via  docker exec -it isaac ./isaaclab.sh -p <script> ...
+#                    full-isaac also has the full editor (runheadless) for authoring stages.
 [Unit]
 Description=Isaac {{ isaac_option }} container (Project Paradaim)
 After=docker.service
@@ -17,7 +18,7 @@ ExecStartPre=-/usr/bin/docker rm -f isaac
 # so the uid never drifts between the chown, the mounts and the container.
 {% if isaac_option == 'sim' %}
 ExecStart=/usr/bin/docker run --name isaac --gpus all --network=host \
-    -e ACCEPT_EULA=Y -e PRIVACY_CONSENT=Y \
+    -e ACCEPT_EULA=Y -e \
     -e ISAACSIM_HOST={{ isaacsim_host }} \
     -e ISAACSIM_SIGNAL_PORT={{ isaac_signal_port }} \
     -e ISAACSIM_STREAM_PORT={{ isaac_stream_port }} \
@@ -25,16 +26,36 @@ ExecStart=/usr/bin/docker run --name isaac --gpus all --network=host \
     -v {{ isaac_data_root }}/isaac-sim/config:/isaac-sim/.nvidia-omniverse/config:rw \
     -v {{ isaac_data_root }}/isaac-sim/data:/isaac-sim/.local/share/ov/data:rw \
     -u {{ isaac_uid }}:{{ isaac_uid }} --entrypoint bash {{ isaac_image }} -c "./runheadless.sh -v"
+{% elif isaac_option == 'full-isaac' %}
+# full-isaac = Arena source build (full Sim editor + Lab + Arena), validated 23-06-2026.
+# The image has a CUSTOM entrypoint that creates a user from the DOCKER_RUN_* env vars
+# and runs the command as that user -> do NOT pass -u / --entrypoint (those break it).
+# The command must be ONE quoted string (the entrypoint does `bash -ic "$@"`).
+# --ipc=host: shared memory for training. The IsaacLab submodule dir is root-owned in
+# the baked image, so we chown it to the run user at start (passwordless sudo) so Lab
+# can write outputs/ + logs/. Paths follow the Arena Dockerfile.
+ExecStartPre=/usr/bin/install -d -o {{ isaac_uid }} -g {{ isaac_uid }} \
+    {{ scratch_root }}/full-isaac/cache {{ scratch_root }}/full-isaac/nv {{ scratch_root }}/full-isaac/nv-omniverse
+ExecStart=/usr/bin/docker run --name isaac --gpus all --network=host --ipc=host \
+    -e ACCEPT_EULA=Y -e \
+    -e DOCKER_RUN_USER_ID={{ isaac_uid }} -e DOCKER_RUN_USER_NAME=ubuntu \
+    -e DOCKER_RUN_GROUP_ID={{ isaac_uid }} -e DOCKER_RUN_GROUP_NAME=ubuntu \
+    -v {{ isaac_data_root }}/full-isaac/logs:/workspaces/isaaclab_arena/submodules/IsaacLab/logs:rw \
+    -v {{ isaac_data_root }}/full-isaac/data_storage:/workspaces/isaaclab_arena/submodules/IsaacLab/data_storage:rw \
+    -v {{ scratch_root }}/full-isaac/cache:/home/ubuntu/.cache:rw \
+    -v {{ scratch_root }}/full-isaac/nv:/home/ubuntu/.nv:rw \
+    -v {{ scratch_root }}/full-isaac/nv-omniverse:/home/ubuntu/.nvidia-omniverse:rw \
+    {{ isaac_image }} 'sudo chown ubuntu /workspaces/isaaclab_arena/submodules/IsaacLab && sleep infinity'
 {% else %}
-# Persistent (external volume): training output (logs) + user data_storage. The
-# Omniverse/Kit caches are regenerable -> ephemeral scratch (fast local NVMe, wiped
-# on reboot -> recreated below). Mount paths follow the NVIDIA Isaac Lab compose.
+# lab. Persistent (external volume): training output (logs) + user data_storage.
+# Omniverse/Kit caches are regenerable -> ephemeral scratch (wiped on reboot ->
+# recreated below). Mount paths follow the NVIDIA Isaac Lab compose.
 ExecStartPre=/usr/bin/install -d -o {{ isaac_uid }} -g {{ isaac_uid }} \
     {{ scratch_root }}/isaac-lab/kit-cache {{ scratch_root }}/isaac-lab/cache \
     {{ scratch_root }}/isaac-lab/compute {{ scratch_root }}/isaac-lab/ov-data \
     {{ scratch_root }}/isaac-lab/nv-omniverse
 ExecStart=/usr/bin/docker run --name isaac --gpus all --network=host \
-    -e ACCEPT_EULA=Y -e PRIVACY_CONSENT=Y \
+    -e ACCEPT_EULA=Y -e \
     -v {{ isaac_data_root }}/isaac-lab/logs:/workspace/isaaclab/logs:rw \
     -v {{ isaac_data_root }}/isaac-lab/data_storage:/workspace/isaaclab/data_storage:rw \
     -v {{ scratch_root }}/isaac-lab/kit-cache:/isaac-sim/kit/cache:rw \

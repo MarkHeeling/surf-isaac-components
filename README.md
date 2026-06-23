@@ -17,16 +17,21 @@ SURF Research Cloud **components** (Ansible playbooks) for Isaac Sim / Lab / Are
 
 | Option | Contains | Image | How |
 |---|---|---|---|
-| `sim` | Isaac Sim | `isaac-sim:6.0.0-dev2` | pre-built image → pull (digest-pinned) |
-| `lab` | Isaac Sim + Lab | `isaac-lab:3.0.0-beta2` | pre-built image → pull (digest-pinned) |
-| `arena` | Isaac Sim + Lab + Arena | `IsaacLab-Arena/docker/run_docker.sh` | no pre-built image yet → built from source, then digest-pinned |
+| `full-isaac` | Full Isaac Sim editor + Lab + Arena | source build (Arena Dockerfile) | **built on the workstation at provisioning** (build-on-deploy, ~15 min); or set `image_full` to pull a pre-built image (see [Building full-isaac](#building-full-isaac)) |
+| `lab` | Isaac Sim (minimal) + Lab | `isaac-lab` (NGC) | pre-built → pull (digest-pinned); headless training + lean livestream, **no full editor** |
+| `sim` | Full Isaac Sim editor | `isaac-sim` (NGC) | pre-built → pull (digest-pinned) |
+| `arena` | — | — | deferred until NVIDIA ships a pre-built Arena image (Arena is already in `full-isaac`) |
+
+**Which option?** `full-isaac` for interactive work — editor + training (+ Arena) on one workstation and one volume. `lab` for lightweight headless training jobs. `sim` for just the Isaac Sim editor. `arena` is a reserved placeholder.
 
 ### Parameters
 
 | Parameter | Default | Description |
 |---|---|---|
-| `isaac_option` | `lab` | Which variant to deploy: `sim` / `lab` / `arena` |
-| `image_sim` / `image_lab` | digests | Container image per option. Overridable → roll out a newer build without editing the playbook |
+| `isaac_option` | `lab` | Which variant to deploy: `full-isaac` / `lab` / `sim` / `arena` |
+| `image_sim` / `image_lab` | digests | Pre-built NGC image per option. Overridable → roll out a newer build without editing the playbook |
+| `image_full` | `""` | Empty (default) = build full-isaac from source at provisioning. Set to a registry digest to pull a pre-built image instead |
+| `arena_ref` | `baa1b119…` | full-isaac build-on-deploy: Arena git commit/tag/branch to build. Default = the validated commit (main, 2026-06-23); change to roll forward |
 | `isaac_data_root` | `/data/isaac-data` | Mount point of the **persistent data volume** (survives a rebuild). Must match the volume's mount path — SURF mounts it at `/data/<volume-name>`, so name the volume `isaac-data` |
 | `scratch_root` | `/mnt/scratch` | Mount point of the **ephemeral scratch disk** (fast local NVMe, auto-added on GPU flavours, **wiped on reboot**). Holds the regenerable Omniverse/Kit caches; the unit recreates the dirs at each start |
 | `isaacsim_host` | `127.0.0.1` | Address the streaming client connects to. `127.0.0.1` only works locally — for remote streaming set it to a reachable address: easiest is SURF's **Resource** source type with value `workspace_fqdn` (auto-fills the workspace DNS name), or a WireGuard tunnel IP (e.g. `10.8.0.1`) |
@@ -84,6 +89,9 @@ There are **two alternative ways** to make the workstation reachable. Pick one �
 > The value applied to `isaacsim_host` comes from the catalog item and is (re)applied on create/rebuild — a normal reboot keeps any manual change, a rebuild resets it to the catalog value.
 
 For more information, see [Livestream Clients](https://docs.omniverse.nvidia.com/app_isaacsim/app_isaacsim/streaming.html).
+
+
+> `full-isaac` is the heaviest option (full Sim + Lab + Arena + GR00T/openpi clients; Arena is v0.2 beta) and pulls many assets. Pick it when you need the **editor + training (+ benchmarking) on one workstation with one volume**; for pure headless training jobs the lighter `lab` image is faster.
 
 ---
 
