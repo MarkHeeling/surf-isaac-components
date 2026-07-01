@@ -26,7 +26,7 @@
 
     # --- full-isaac build-on-deploy (only used when image_full is empty) -----------
     arena_repo: "https://github.com/isaac-sim/IsaacLab-Arena.git"
-    arena_ref: "baa1b119002bb0e53a1ba6dba1e7d5693222cc4f"   # validated commit (main, 2026-06-23); Arena 0.2 = Isaac Sim 6.0 / Lab 3.0
+    arena_ref: "0a1b8c2345691c2f225b4a01b96dbe4d0aeb221c"   # release/0.2.1 tip (2026-07-01); Arena 0.2.1 builds on isaac-sim:6.0.0-dev2. Prev: baa1b119 (main, 2026-06-23)
     arena_src_dir: "/opt/IsaacLab-Arena"
 
     # Persistent data volume (survives a workspace rebuild). SURF mounts an
@@ -219,6 +219,15 @@
       when: ngc_login.rc | default(1) != 0
 
     # ------------------------------------------------------------ 4. Select + pull image
+    - name: Normalise isaac_option (accept full_isaac as full-isaac)
+      ansible.builtin.set_fact:
+        isaac_option: "{{ isaac_option | replace('_', '-') }}"
+
+    - name: Fail clearly on an unknown isaac_option
+      ansible.builtin.fail:
+        msg: "isaac_option='{{ isaac_option }}' is invalid. Use one of: full-isaac, lab, sim, arena."
+      when: isaac_option not in ['full-isaac', 'lab', 'sim', 'arena']
+
     - name: Arena (standalone) not supported yet (no pre-built image)
       ansible.builtin.fail:
         msg: >-

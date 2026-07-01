@@ -18,7 +18,7 @@ ExecStartPre=-/usr/bin/docker rm -f isaac
 # so the uid never drifts between the chown, the mounts and the container.
 {% if isaac_option == 'sim' %}
 ExecStart=/usr/bin/docker run --name isaac --gpus all --network=host \
-    -e ACCEPT_EULA=Y -e \
+    -e ACCEPT_EULA=Y \
     -e ISAACSIM_HOST={{ isaacsim_host }} \
     -e ISAACSIM_SIGNAL_PORT={{ isaac_signal_port }} \
     -e ISAACSIM_STREAM_PORT={{ isaac_stream_port }} \
@@ -37,7 +37,7 @@ ExecStart=/usr/bin/docker run --name isaac --gpus all --network=host \
 ExecStartPre=/usr/bin/install -d -o {{ isaac_uid }} -g {{ isaac_uid }} \
     {{ scratch_root }}/full-isaac/cache {{ scratch_root }}/full-isaac/nv {{ scratch_root }}/full-isaac/nv-omniverse
 ExecStart=/usr/bin/docker run --name isaac --gpus all --network=host --ipc=host \
-    -e ACCEPT_EULA=Y -e \
+    -e ACCEPT_EULA=Y \
     -e DOCKER_RUN_USER_ID={{ isaac_uid }} -e DOCKER_RUN_USER_NAME=ubuntu \
     -e DOCKER_RUN_GROUP_ID={{ isaac_uid }} -e DOCKER_RUN_GROUP_NAME=ubuntu \
     -v {{ isaac_data_root }}/full-isaac/logs:/workspaces/isaaclab_arena/submodules/IsaacLab/logs:rw \
@@ -55,7 +55,7 @@ ExecStartPre=/usr/bin/install -d -o {{ isaac_uid }} -g {{ isaac_uid }} \
     {{ scratch_root }}/isaac-lab/compute {{ scratch_root }}/isaac-lab/ov-data \
     {{ scratch_root }}/isaac-lab/nv-omniverse
 ExecStart=/usr/bin/docker run --name isaac --gpus all --network=host \
-    -e ACCEPT_EULA=Y -e \
+    -e ACCEPT_EULA=Y \
     -v {{ isaac_data_root }}/isaac-lab/logs:/workspace/isaaclab/logs:rw \
     -v {{ isaac_data_root }}/isaac-lab/data_storage:/workspace/isaaclab/data_storage:rw \
     -v {{ scratch_root }}/isaac-lab/kit-cache:/isaac-sim/kit/cache:rw \
