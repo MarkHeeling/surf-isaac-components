@@ -15,9 +15,21 @@
     nvidia_driver_pin_glob: "580.*"   # apt preference pins to this branch (any 580.x)
     nvidia_driver_apt_version: ""     # optional exact apt version (e.g. 580.95.05-0ubuntu1); empty = metapackage (latest 580)
 
-    # Pinned by DIGEST
-    image_sim: "nvcr.io/nvidia/isaac-sim@sha256:c3e7bef5b2bfdb9972807c34195206078372bf8c6cff79716be130a3fe3e9ce9"
-    image_lab: "nvcr.io/nvidia/isaac-lab@sha256:970621075d00059c309f847fa835709de3fa634537407a7009c586c97893d218"
+    # --- Images ---------------------------------------------------------------
+    # Pre-built NGC images. Pin by DIGEST for a reproducible rollout:
+    #   nvcr.io/nvidia/isaac-sim@sha256:<digest>
+    # The tag form below rolls to whatever NGC serves for that tag; the digest that
+    # was actually pulled is printed by the playbook and written to
+    # /etc/isaac/image-digest, so it can be pasted back here (or resolve it from a
+    # machine with NGC access: `docker buildx imagetools inspect <image:tag>`).
+    #   Isaac Sim 6.1.0 GA (2026-09-10)          -> nvcr.io/nvidia/isaac-sim:6.1.0
+    #   Isaac Lab 3.0.0 RC1 / v3.0.0-EA (2026-09-16), built on Isaac Sim 6.1
+    #                                             -> nvcr.io/nvidia/isaac-lab:3.0.0-rc1
+    # Previous digest pins (Isaac Sim 6.0.x / Isaac Lab 3.0.0-beta2 line):
+    #   image_sim: nvcr.io/nvidia/isaac-sim@sha256:c3e7bef5b2bfdb9972807c34195206078372bf8c6cff79716be130a3fe3e9ce9
+    #   image_lab: nvcr.io/nvidia/isaac-lab@sha256:970621075d00059c309f847fa835709de3fa634537407a7009c586c97893d218
+    image_sim: "nvcr.io/nvidia/isaac-sim:6.1.0"
+    image_lab: "nvcr.io/nvidia/isaac-lab:3.0.0-rc1"
     # full-isaac: the "everything" image (full Isaac Sim editor + Isaac Lab + Arena).
     # Default = build from source on the workstation at provisioning (build-on-deploy,
     # ~15 min) so the catalog item is shareable without a registry. Optionally set
@@ -26,7 +38,10 @@
 
     # --- full-isaac build-on-deploy (only used when image_full is empty) -----------
     arena_repo: "https://github.com/isaac-sim/IsaacLab-Arena.git"
-    arena_ref: "0a1b8c2345691c2f225b4a01b96dbe4d0aeb221c"   # release/0.2.1 tip (2026-07-01); Arena 0.2.1 builds on isaac-sim:6.0.0-dev2. Prev: baa1b119 (main, 2026-06-23)
+    # release/0.3.0 tip (2026-09-15, Arena 0.3 Alpha). Its Dockerfile builds on
+    # nvcr.io/nvidia/isaac-sim:6.0.1 with Isaac Lab submodule af1bab4 (3.0 line).
+    # Prev: 0a1b8c23 (release/0.2.1, 2026-07-01), baa1b119 (main, 2026-06-23)
+    arena_ref: "8737b4ceb25f99f81a81786b7fde73139b52f324"
     arena_src_dir: "/opt/IsaacLab-Arena"
 
     # Persistent data volume (survives a workspace rebuild). SURF mounts an
@@ -40,17 +55,38 @@
 
     # Streaming host advertised to the WebRTC client. Normally set by the catalog
     # item via the "Resource" source type (value: workspace_fqdn), which auto-fills
-    # the workspace's DNS name. For WireGuard use the tunnel IP (e.g. 10.8.0.1).
-    # 127.0.0.1 here is only a local fallback.
+    # the workspace's DNS name. With wireguard_enabled the playbook overrides it
+    # with the tunnel IP (wireguard_address). 127.0.0.1 here is only a local fallback.
     isaacsim_host: "127.0.0.1"
     isaac_signal_port: 49100
     isaac_stream_port: 47998
+
+    # --- WireGuard (optional) ---------------------------------------------------
+    # Installs a WireGuard server on the workstation so the WebRTC viewer is reached
+    # over the tunnel instead of public ports: open only wireguard_port/UDP in the
+    # catalog access rules and the stream is advertised on the tunnel IP.
+    wireguard_enabled: false
+    wireguard_port: 51820
+    wireguard_address: "10.8.0.1/24"     # server tunnel IP + subnet; clients get .2, .3, ...
+    # Client public keys (generate on the client: `wg genkey | tee c.key | wg pubkey`).
+    # Comma/space/newline separated. Entry = PUBKEY or PUBKEY@10.8.0.7 (explicit IP);
+    # without an IP the N-th entry gets server IP + N. Empty = tunnel up, no peers yet.
+    wireguard_peers: ""
+    # Endpoint written into the client example config. Default = this host's FQDN;
+    # set it via the "Resource" source type (workspace_fqdn) or a fixed public IP.
+    wireguard_endpoint: "{{ ansible_fqdn }}"
+    # Optional server private key as a SURF collaboration secret (Vault) so the
+    # server key survives a rebuild and clients keep working. Empty = generate on
+    # the workstation (kept in /etc/wireguard/wg0.key; a rebuild makes a new one).
+    wireguard_private_key: ""
 
     # NGC API key via a SURF collaboration secret (Vault) as the var `ngc_api_key`.
 
   handlers:
     - name: Restart docker
       ansible.builtin.systemd: { name: docker, state: restarted }
+    - name: Restart wireguard
+      ansible.builtin.systemd: { name: wg-quick@wg0, state: restarted }
 
   tasks:
     # ---------------------------------------------------- 0. NVIDIA driver R580 pin
@@ -219,6 +255,9 @@
       when: ngc_login.rc | default(1) != 0
 
     # ------------------------------------------------------------ 4. Select + pull image
+    - name: Component state directory
+      ansible.builtin.file: { path: /etc/isaac, state: directory, mode: "0755" }
+
     - name: Normalise isaac_option (accept full_isaac as full-isaac)
       ansible.builtin.set_fact:
         isaac_option: "{{ isaac_option | replace('_', '-') }}"
@@ -312,7 +351,186 @@
       ansible.builtin.command: "docker pull {{ isaac_image }}"
       when: not (isaac_option == 'full-isaac' and image_full | length == 0)
 
-    # ------------------------------------------------------------------ 5. systemd unit
+    # Record which digest the tag resolved to, so a tag-pinned default can be turned
+    # into a digest pin (paste it into image_sim / image_lab) and so a rebuild can be
+    # compared against the previous deploy.
+    - name: Resolve the pulled image to its registry digest
+      ansible.builtin.command: "docker image inspect --format '{{ '{{' }} join .RepoDigests \",\" {{ '}}' }}' {{ isaac_image }}"
+      register: isaac_image_digest
+      changed_when: false
+      failed_when: false
+      when: not (isaac_option == 'full-isaac' and image_full | length == 0)
+
+    - name: Write the resolved digest to /etc/isaac/image-digest
+      ansible.builtin.copy:
+        dest: /etc/isaac/image-digest
+        mode: "0644"
+        content: |
+          # {{ isaac_option }} image pulled by the SURF component on {{ ansible_date_time.date }}
+          tag={{ isaac_image }}
+          digest={{ isaac_image_digest.stdout | default('') }}
+      when:
+        - isaac_image_digest is defined
+        - isaac_image_digest.rc | default(1) == 0
+
+    - name: Report the resolved digest
+      ansible.builtin.debug:
+        msg: "{{ isaac_image }} -> {{ isaac_image_digest.stdout | default('(digest not resolved)') }}"
+      when: isaac_image_digest is defined
+
+    # ------------------------------------------------------------ 5. WireGuard (optional)
+    # A WireGuard server on the workstation: the viewer connects over the tunnel, so no
+    # WebRTC ports are opened publicly. Server key: Vault secret (stable) or generated.
+    - name: Derive WireGuard facts (server IP, subnet, peer list)
+      ansible.builtin.set_fact:
+        wg_server_ip: "{{ wireguard_address.split('/')[0] }}"
+        wg_subnet_prefix: "{{ wireguard_address.split('/')[0].rsplit('.', 1)[0] }}"
+        wg_host_base: "{{ wireguard_address.split('/')[0].rsplit('.', 1)[1] | int }}"
+        # accepts a string (comma/space/newline separated) or a list
+        wg_peer_list: >-
+          {{ ((wireguard_peers | join(' ')) if wireguard_peers is not string else wireguard_peers)
+             | replace(',', ' ') | replace(';', ' ') | split }}
+      when: wireguard_enabled | bool
+
+    - name: Install WireGuard
+      ansible.builtin.apt:
+        name: [wireguard, wireguard-tools]
+        update_cache: true
+      when: wireguard_enabled | bool
+
+    - name: WireGuard config directory
+      ansible.builtin.file: { path: /etc/wireguard, state: directory, mode: "0700" }
+      when: wireguard_enabled | bool
+
+    - name: Install the server private key from the Vault secret (if provided)
+      ansible.builtin.copy:
+        dest: /etc/wireguard/wg0.key
+        mode: "0600"
+        content: "{{ wireguard_private_key | trim }}\n"
+      no_log: true
+      when:
+        - wireguard_enabled | bool
+        - wireguard_private_key | length > 0
+
+    - name: Generate a server private key (no secret provided, none on disk yet)
+      ansible.builtin.shell: "umask 077 && wg genkey > /etc/wireguard/wg0.key"
+      args:
+        executable: /bin/bash
+        creates: /etc/wireguard/wg0.key
+      when:
+        - wireguard_enabled | bool
+        - wireguard_private_key | length == 0
+
+    - name: Derive the server public key
+      ansible.builtin.shell: "wg pubkey < /etc/wireguard/wg0.key > /etc/wireguard/wg0.pub && chmod 0644 /etc/wireguard/wg0.pub"
+      args: { executable: /bin/bash }
+      changed_when: false
+      when: wireguard_enabled | bool
+
+    - name: Read server keys
+      ansible.builtin.slurp: { src: "{{ item }}" }
+      loop: [/etc/wireguard/wg0.key, /etc/wireguard/wg0.pub]
+      register: wg_keys
+      no_log: true
+      when: wireguard_enabled | bool
+
+    - name: Set key facts
+      ansible.builtin.set_fact:
+        wg_private_key: "{{ wg_keys.results[0].content | b64decode | trim }}"
+        wg_public_key: "{{ wg_keys.results[1].content | b64decode | trim }}"
+      no_log: true
+      when: wireguard_enabled | bool
+
+    - name: Write /etc/wireguard/wg0.conf
+      ansible.builtin.template:
+        src: templates/wg0.conf.j2
+        dest: /etc/wireguard/wg0.conf
+        mode: "0600"
+      no_log: true
+      notify: Restart wireguard
+      when: wireguard_enabled | bool
+
+    - name: Allow the WireGuard port in ufw (only if ufw is active)
+      ansible.builtin.shell: |
+        set -o pipefail
+        if ufw status 2>/dev/null | grep -q 'Status: active'; then ufw allow {{ wireguard_port }}/udp; fi
+      args: { executable: /bin/bash }
+      changed_when: false
+      when: wireguard_enabled | bool
+
+    - name: Enable + start wg-quick@wg0
+      ansible.builtin.systemd:
+        name: wg-quick@wg0
+        enabled: true
+        state: started
+      when: wireguard_enabled | bool
+
+    - name: Flush handlers (apply a changed wg0.conf before checking the tunnel)
+      ansible.builtin.meta: flush_handlers
+
+    - name: Check the tunnel is up
+      ansible.builtin.command: wg show wg0
+      register: wg_show
+      changed_when: false
+      failed_when: false
+      when: wireguard_enabled | bool
+
+    - name: Client example config (public info only; fill in your own private key)
+      ansible.builtin.copy:
+        dest: /etc/isaac/wireguard-client-example.conf
+        mode: "0644"
+        content: |
+          # WireGuard client config for the Isaac workstation. Copy to your machine,
+          # paste the private key that belongs to the public key you registered in
+          # wireguard_peers, and use the Address that the playbook assigned to it
+          # (server IP + N for the N-th key, unless you gave PUBKEY@IP).
+          [Interface]
+          PrivateKey = <your client private key>
+          Address = {{ wg_subnet_prefix }}.{{ (wg_host_base | int) + 1 }}/32
+
+          [Peer]
+          PublicKey = {{ wg_public_key }}
+          Endpoint = {{ wireguard_endpoint }}:{{ wireguard_port }}
+          AllowedIPs = {{ wg_server_ip }}/32
+          PersistentKeepalive = 25
+      when: wireguard_enabled | bool
+
+    - name: Login hint with the server public key and endpoint
+      ansible.builtin.copy:
+        dest: /etc/update-motd.d/98-isaac-wireguard
+        mode: "0755"
+        content: |
+          #!/bin/sh
+          echo ""
+          echo "  [Isaac] WireGuard: endpoint {{ wireguard_endpoint }}:{{ wireguard_port }}, tunnel IP {{ wg_server_ip }}"
+          echo "  [Isaac] server public key: $(cat /etc/wireguard/wg0.pub 2>/dev/null)"
+          echo "  [Isaac] client example:    /etc/isaac/wireguard-client-example.conf"
+          echo ""
+      when: wireguard_enabled | bool
+
+    - name: Remove the WireGuard login hint when disabled
+      ansible.builtin.file: { path: /etc/update-motd.d/98-isaac-wireguard, state: absent }
+      when: not (wireguard_enabled | bool)
+
+    - name: WireGuard summary
+      ansible.builtin.debug:
+        msg:
+          - "WireGuard up on {{ wireguard_endpoint }}:{{ wireguard_port }}/udp, tunnel IP {{ wg_server_ip }} ({{ wg_peer_list | length }} peer(s))"
+          - "Server public key: {{ wg_public_key }}"
+          - "Client example: /etc/isaac/wireguard-client-example.conf"
+          - >-
+            {{ ('No peers configured yet: add client public keys to wireguard_peers (or ad hoc: '
+                ~ 'wg set wg0 peer <PUBKEY> allowed-ips ' ~ wg_subnet_prefix ~ '.2/32).')
+               if wg_peer_list | length == 0 else 'Peers: ' ~ (wg_peer_list | join(' ')) }}
+          - "{{ 'wg show: ' ~ wg_show.stdout_lines[0] if wg_show.rc == 0 else 'WARNING: wg show wg0 failed (rc=' ~ wg_show.rc ~ ')' }}"
+      when: wireguard_enabled | bool
+
+    - name: Advertise the WireGuard tunnel IP to the streaming client
+      ansible.builtin.set_fact:
+        isaacsim_host: "{{ wg_server_ip }}"
+      when: wireguard_enabled | bool
+
+    # ------------------------------------------------------------------ 6. systemd unit
     - name: Install the Isaac systemd unit
       ansible.builtin.template:
         src: templates/isaac-container.service.j2

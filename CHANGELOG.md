@@ -4,6 +4,40 @@ Notable changes to the `nvidia-isaac-sim-lab-arena` SURF Research Cloud componen
 Images are pinned by digest, so a "version" is the pinned image plus this history.
 Dates are when the change landed in the repo.
 
+## 2026-09-22 — Roll forward to Isaac Sim 6.1 / Isaac Lab 3.0 RC1 / Arena 0.3, optional WireGuard
+
+- **Images bumped to the newest releases.** `sim` → `nvcr.io/nvidia/isaac-sim:6.1.0` (6.1.0 GA,
+  2026-09-10). `lab` → `nvcr.io/nvidia/isaac-lab:3.0.0-rc1` (Isaac Lab 3.0.0 RC1 = the `v3.0.0-EA`
+  tag, 2026-09-16, built on Isaac Sim 6.1; GA targeted end of October 2026). `full-isaac` →
+  `arena_ref` = `release/0.3.0` tip `8737b4ce` (2026-09-15, Arena 0.3 Alpha). Arena 0.3 still
+  builds on `isaac-sim:6.0.1` with the Isaac Lab 3.0 line as submodule, so `full-isaac` lags
+  `sim`/`lab` by one Sim minor until Arena moves its base image.
+- **Pin by tag for now, digest recorded at deploy.** The NGC registry was not reachable from the
+  environment that made this change, so the new defaults are tags, not digests. The playbook now
+  resolves the pulled image to its `RepoDigest`, prints it, and writes it to
+  `/etc/isaac/image-digest`; paste that into `image_sim` / `image_lab` (`…@sha256:…`) to freeze a
+  deploy. The previous digest pins (6.0.x / 3.0.0-beta2 line) are kept as comments in the
+  playbook for rollback. README gains "Pinning images".
+- **Optional WireGuard server** (`wireguard_enabled`, default off): installs `wireguard`,
+  creates the server key (or takes `wireguard_private_key` from a collaboration secret so the
+  key survives a rebuild), templates `/etc/wireguard/wg0.conf` with a `[Peer]` per client public
+  key in `wireguard_peers` (`PUBKEY` or `PUBKEY@IP`; auto-assigned `.2`, `.3`, …), enables
+  `wg-quick@wg0`, opens the port in ufw when ufw is active, and overrides `isaacsim_host` with
+  the tunnel IP so the WebRTC stream is advertised on the tunnel. Server public key + endpoint
+  are shown at SSH login; a client example config lands in
+  `/etc/isaac/wireguard-client-example.conf`. Replaces the manual "Option B" in the README.
+- **Driver pin unchanged (R580).** Isaac Lab's install docs still recommend 580.95.05+ on Linux
+  and Isaac Sim fails to see CUDA devices on the 595 branch (isaac-sim/IsaacSim#537), so the
+  A10 stays on `cuda-drivers-580`.
+- **Isaac Lab 3.0 image notes.** The RC1 image creates uid 1000 (`isaaclab`) as runtime user and
+  keeps `HOME=/root`, so the existing `-u 1000` + `/root/...` scratch mounts still apply. It also
+  allows OmniHub to start (`HUB__ARGS__DETECT_ONLY=false`), so the "Hub failed to launch" warning
+  from the beta images should disappear.
+- Not validated end-to-end on a workstation after this bump. On the next deploy: check `docker ps`,
+  a Cartpole train run on `lab`, the editor stream on `sim`, and the Arena build for `full-isaac`.
+- README: parameter table extended (WireGuard, image tags), new "Multiple GPUs (2× A10)" note,
+  version summary.
+
 ## 2026-07-01 — full-isaac rolled forward to Arena release/0.2.1
 
 - Bumped `arena_ref` from `baa1b119` (main, 2026-06-23) to the `release/0.2.1` tip

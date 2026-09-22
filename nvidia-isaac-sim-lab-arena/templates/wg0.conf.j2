@@ -1,0 +1,16 @@
+# WireGuard server for the Isaac workstation. Managed by Ansible (SURF component
+# nvidia-isaac-sim-lab-arena) -> edit wireguard_* parameters, not this file.
+# Clients reach only this host over the tunnel (no forwarding / NAT).
+[Interface]
+Address = {{ wireguard_address }}
+ListenPort = {{ wireguard_port }}
+PrivateKey = {{ wg_private_key }}
+
+{% for peer in wg_peer_list %}
+{% set parts = peer.split('@') %}
+[Peer]
+# client {{ loop.index }}
+PublicKey = {{ parts[0] }}
+AllowedIPs = {{ (parts[1] if parts | length > 1 else wg_subnet_prefix ~ '.' ~ ((wg_host_base | int) + loop.index)) }}/32
+
+{% endfor %}
