@@ -130,7 +130,7 @@ test('background checks only while starting or stopping, or while waiting for fr
   assert.equal(await worker.pollMinutes(), null)
 })
 
-test('checks are rate-limited: opening the panel and Vernieuwen within 20 s do not reach SURF', async () => {
+test('checks are rate-limited: opening the popup and Vernieuwen within 20 s do not reach SURF', async () => {
   const { world, worker } = setup()
   await worker.refresh()
   const after = world.seen.length

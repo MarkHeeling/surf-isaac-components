@@ -1,17 +1,16 @@
 {
   "manifest_version": 3,
   "name": "SURF Workspace",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Status, GPU-beschikbaarheid, starten en stoppen van je SURF Research Cloud-workspace.",
   "icons": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
   "action": {
     "default_title": "SURF Workspace",
+    "default_popup": "panel.html",
     "default_icon": { "16": "icons/icon16.png", "32": "icons/icon32.png" }
   },
-  "side_panel": { "default_path": "panel.html" },
-  "minimum_chrome_version": "116",
   "options_ui": { "page": "options.html", "open_in_tab": true },
   "background": { "service_worker": "background.js", "type": "module" },
-  "permissions": ["storage", "alarms", "notifications", "sidePanel"],
+  "permissions": ["storage", "alarms", "notifications"],
   "host_permissions": ["https://gw.live.surfresearchcloud.nl/*"]
 }
