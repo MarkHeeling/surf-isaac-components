@@ -11,6 +11,13 @@ export type Workspace = {
   lastAction?: { type?: string; status?: string; message?: string }
 }
 
+export type GpuFlavour = {
+  /** Size flavour name, e.g. "A10 - 2 GPU". */
+  name: string
+  /** The portal's `available` flag: false while no GPUs of this kind are free. */
+  available: boolean | null
+}
+
 declare module 'claude-code' {
   interface PluginState {
     'surf-workspace': {
@@ -25,6 +32,10 @@ declare module 'claude-code' {
       confirm: string | null
       /** Epoch ms per workspace id since it was first seen resuming. */
       resumingSince: Record<string, number>
+      /** GPU flavours of the catalog item with their availability. */
+      flavours: GpuFlavour[]
+      /** Why the availability check failed, if it did. */
+      flavoursError: string | null
     }
   }
 }

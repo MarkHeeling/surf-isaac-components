@@ -1,6 +1,6 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { describeChange, isSlowResume, parseList, statusLine } from '../hooks/surf'
+import { describeAvailabilityChange, describeChange, isSlowResume, parseAvailability, parseList, statusLine } from '../hooks/surf'
 
 const LIST = JSON.stringify({
   count: 2,
@@ -16,6 +16,23 @@ const LIST = JSON.stringify({
     { id: 'ws-2', name: 'other-box', status: 'running', active: true, resource_meta: {} },
   ],
 })
+
+// Trimmed from a real offerings answer (2026-10-07): one `available` flag per flavour.
+const offerings = (one: boolean, two: boolean) =>
+  JSON.stringify({
+    count: 1,
+    results: [
+      {
+        id: 'offering-1',
+        subscription: { name: 'SURF HPC Cloud', cloud_status: 'up' },
+        flavours: [
+          { name: 'A10 - 1 GPU', category: 'size', status: 'active', available: one, tags: [{ key: 'GPU', value: '1' }] },
+          { name: 'A10 - 2 GPU', category: 'size', status: 'active', available: two, tags: [{ key: 'GPU', value: '2' }] },
+          { name: 'Ubuntu 22.04', category: 'os', status: 'active', available: null },
+        ],
+      },
+    ],
+  })
 
 const PANE_PROPS = {
   title: 'SURF Research Cloud',
@@ -61,6 +78,27 @@ describe('parsing', () => {
       '',
     )
     expect(list[0]?.lastAction).toEqual({ type: 'resume', status: 'failed', message: 'No valid host was found' })
+  })
+})
+
+describe('availability', () => {
+  test('reads the size flavours and their available flag', () => {
+    expect(parseAvailability(offerings(false, true))).toEqual([
+      { name: 'A10 - 1 GPU', available: false },
+      { name: 'A10 - 2 GPU', available: true },
+    ])
+  })
+
+  test('says when a flavour comes free or runs out', () => {
+    const before = parseAvailability(offerings(false, false))
+    expect(describeAvailabilityChange(before, parseAvailability(offerings(false, true)))).toEqual(['A10 - 2 GPU is weer beschikbaar.'])
+    expect(describeAvailabilityChange(parseAvailability(offerings(true, true)), before)).toHaveLength(2)
+    expect(describeAvailabilityChange([], before)).toEqual([])
+  })
+
+  test('the status line shows the flavour the workspace uses', () => {
+    const ws = [{ id: 'ws-1', name: 'markisaacsim', status: 'paused', flavour: 'A10 - 2 GPU' }]
+    expect(statusLine(ws, null, parseAvailability(offerings(true, false)))).toBe('SURF: markisaacsim paused · A10 - 2 GPU bezet')
   })
 })
 
@@ -187,4 +225,68 @@ test('without a setting the token comes from SURF_RC_TOKEN', { options: { notify
   await clock.settle()
 
   expect(auth[0]).toBe('env-token')
+})
+
+test('availability is polled and a flavour coming free raises a toast', { options: { api_token: 'secret-token', notify_macos: false } }, async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  const statuses: (string | undefined)[] = []
+  on('ui.status', ($, e) => {
+    statuses.push(e.text)
+    return { value: undefined }
+  })
+  const toasts: string[] = []
+  on('ui.toast', ($, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  let free = false
+  const urls: string[] = []
+  on('http.fetch', ($, e) => {
+    urls.push(e.url)
+    if (e.url.includes('/offerings/')) {
+      // The first try with /v1 is missing on this gateway: the mod retries without.
+      if (e.url.includes('/v1/')) return { value: { status: 404, ok: false, headers: {}, text: '' } }
+      return { value: { status: 200, ok: true, headers: {}, text: offerings(false, free) } }
+    }
+    return { value: { status: 200, ok: true, headers: {}, text: LIST } }
+  })
+
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+
+  const offeringsUrl = urls.find(u => u.includes('/offerings/') && !u.includes('/v1/'))
+  expect(offeringsUrl).toContain('/application-market/catalog_items/ca0f2d7e-9bcb-4e8c-b902-e4b656dc180e/offerings/?co=9e2da160-b184-4c14-8157-2256df95f9ef&product=daphne-compute')
+  expect(statuses).toContain('SURF: markisaacsim paused · other-box running · A10 - 2 GPU bezet')
+
+  free = true
+  await clock.advance(60_000)
+  expect(toasts).toContain('A10 - 2 GPU is weer beschikbaar.')
+  expect(statuses).toContain('SURF: markisaacsim paused · other-box running · A10 - 2 GPU vrij')
+})
+
+test('while the flavour is taken there is no Starten button, only the wait note', { options: { api_token: 'secret-token', notify_macos: false } }, async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
+  const posts: string[] = []
+  on('http.fetch', ($, e) => {
+    if (e.init?.method === 'POST') posts.push(e.url)
+    if (e.url.includes('/offerings/')) return { value: { status: 200, ok: true, headers: {}, text: offerings(false, false) } }
+    return { value: { status: 200, ok: true, headers: {}, text: LIST } }
+  })
+
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'surf-workspace', surface, component: 'Pane', requestId: 'surf-workspace', props: PANE_PROPS })
+    expect(await ui.find({ key: 'resume-ws-1' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /Geen A10 - 2 GPU vrij/ })).toBeDefined()
+    await ui.unmount()
+  }
+  expect(posts).toEqual([])
 })

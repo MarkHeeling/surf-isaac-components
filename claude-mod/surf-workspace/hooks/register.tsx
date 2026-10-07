@@ -1,18 +1,23 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
-import type { Workspace } from '../types'
+import type { GpuFlavour, Workspace } from '../types'
 import {
   FAST_POLL_MS,
   PORTAL,
   actionUrl,
+  availabilityText,
+  describeAvailabilityChange,
   describeChange,
   headers,
   isSlowResume,
   isTransitioning,
   listUrl,
   minutesSince,
+  offeringsUrl,
+  parseAvailability,
   parseList,
+  relevantFlavours,
   statusLine,
 } from './surf'
 
@@ -24,6 +29,8 @@ const updatedAt = atom({ plugin: 'surf-workspace', key: 'updatedAt' } as const, 
 const busy = atom({ plugin: 'surf-workspace', key: 'busy' } as const, null)
 const confirm = atom({ plugin: 'surf-workspace', key: 'confirm' } as const, null)
 const resumingSince = atom({ plugin: 'surf-workspace', key: 'resumingSince' } as const, {})
+const flavours = atom({ plugin: 'surf-workspace', key: 'flavours' } as const, [])
+const flavoursError = atom({ plugin: 'surf-workspace', key: 'flavoursError' } as const, null)
 
 const STATUS_COLOR: Record<string, string> = {
   running: 'success',
@@ -40,10 +47,22 @@ type Config = {
   idleMs: number
   warnMinutes: number
   notifyMacos: boolean
+  catalogItem: string
+  co: string
+  products: string[]
 }
 
 // Module-level bookkeeping; a reload starts it over, which only costs one early fetch.
-let cfg: Config = { token: '', filter: '', idleMs: 60_000, warnMinutes: 4, notifyMacos: true }
+let cfg: Config = {
+  token: '',
+  filter: '',
+  idleMs: 60_000,
+  warnMinutes: 4,
+  notifyMacos: true,
+  catalogItem: '',
+  co: '',
+  products: [],
+}
 let lastFetch = 0
 let inFlight = false
 const warned = new Set<string>()
@@ -73,6 +92,35 @@ async function tell($: EngineInterface, text: string): Promise<void> {
     await $.process.run(['osascript', '-e', `display notification "${quoted}" with title "SURF Research Cloud"`])
   } catch {
     // Not on macOS, or osascript refused: the toast is enough.
+  }
+}
+
+/**
+ * Reads the catalog item's offerings, where the portal's create dialog gets
+ * its GPU availability; nothing is created. Toasts when a flavour comes free.
+ */
+async function refreshAvailability($: EngineInterface): Promise<GpuFlavour[]> {
+  const known = await read($, flavours)
+  if (!cfg.catalogItem || !cfg.co) return known
+  try {
+    const url = offeringsUrl(cfg.catalogItem, cfg.co, cfg.products)
+    let response = await $.http.fetch(url, { headers: headers(cfg.token) })
+    if (response.status === 404) {
+      // The portal itself calls the gateway without the /v1 prefix.
+      response = await $.http.fetch(url.replace('/v1/', '/'), { headers: headers(cfg.token) })
+    }
+    if (!response.ok) {
+      await update($, flavoursError, () => `beschikbaarheid: HTTP ${response.status}`)
+      return known
+    }
+    const fresh = parseAvailability(response.text)
+    for (const text of describeAvailabilityChange(known, fresh)) await tell($, text)
+    await update($, flavours, () => fresh)
+    await update($, flavoursError, () => null)
+    return fresh
+  } catch (err) {
+    await update($, flavoursError, () => `beschikbaarheid: ${err instanceof Error ? err.message : String(err)}`)
+    return known
   }
 }
 
@@ -112,12 +160,13 @@ async function refresh($: EngineInterface): Promise<void> {
       }
     }
 
+    const gpus = await refreshAvailability($)
     lastFetch = now
     await update($, workspaces, () => fresh)
     await update($, resumingSince, () => since)
     await update($, updatedAt, () => now)
     await update($, error, () => null)
-    $.ui.status(statusLine(fresh, null))
+    $.ui.status(statusLine(fresh, null, gpus))
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err)
     await update($, error, () => why)
@@ -129,6 +178,12 @@ async function refresh($: EngineInterface): Promise<void> {
 
 async function act($: EngineInterface, ws: Workspace, action: 'pause' | 'resume'): Promise<void> {
   await update($, confirm, () => null)
+  const gpu = (await read($, flavours)).find(f => f.name === ws.flavour)
+  if (action === 'resume' && gpu?.available === false) {
+    // Starting without free GPUs only ends in the portal's timeout: wait for the toast instead.
+    $.ui.toast(`${ws.name} niet gestart: geen ${gpu.name} vrij.`, { timeoutMs: 10_000 })
+    return
+  }
   await update($, busy, () => ws.id)
   try {
     const response = await $.http.fetch(actionUrl(ws.id, action), {
@@ -161,12 +216,19 @@ export const register: Register = (on, options) => {
     idleMs: Math.max(15, Number(options.poll_seconds ?? 60)) * 1000,
     warnMinutes: Number(options.resume_warn_minutes ?? 4),
     notifyMacos: options.notify_macos !== false,
+    catalogItem: String(options.catalog_item ?? '').trim(),
+    co: String(options.co_id ?? '').trim(),
+    products: String(options.products ?? '')
+      .split(',')
+      .map(p => p.trim())
+      .filter(Boolean),
   }
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'surf',
-      description: 'SURF Research Cloud workspaces: status, starten en stoppen',
+      description: 'SURF Research Cloud: paneel met status, GPU-beschikbaarheid, starten en stoppen; "/surf status" geeft alleen de status',
+      argumentHint: '[status]',
     })
     void resolveToken($).then(() => refresh($))
     $.clock.every(FAST_POLL_MS, async () => {
@@ -179,12 +241,13 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('command.run', { command: 'surf' }, async $ => {
-    await $.ui.open({ id: PANE, title: 'SURF Research Cloud' })
+  on('command.run', { command: 'surf' }, async ($, e) => {
+    // "/surf status" only reads; plain "/surf" opens the pane with the buttons.
+    if (e.args.trim() !== 'status') await $.ui.open({ id: PANE, title: 'SURF Research Cloud' })
     await refresh($)
     const err = await read($, error)
 
-    return { text: statusLine(await read($, workspaces), err) }
+    return { text: statusLine(await read($, workspaces), err, await read($, flavours)) }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
@@ -195,13 +258,28 @@ export const register: Register = (on, options) => {
     const pending = await read($, busy)
     const asking = await read($, confirm)
     const since = await read($, resumingSince)
+    const gpus = await read($, flavours)
+    const gpuErr = await read($, flavoursError)
     const now = await $.clock.now()
+    const isFree = (ws: Workspace) => gpus.find(f => f.name === ws.flavour)?.available
 
     return (
       <Box flexDirection="column">
         {!cfg.token && <Text color="warning">Geen API-token gevonden: zet SURF_RC_TOKEN of het keychain-item surf-research-cloud (zie README).</Text>}
         {err && <Text color="error">Fout: {err}</Text>}
         {cfg.token && list.length === 0 && !err && <Text dimColor>Geen workspaces gevonden{cfg.filter ? ` met "${cfg.filter}" in de naam` : ''}.</Text>}
+        {gpus.length > 0 && (
+          <Box flexDirection="column" marginBottom={1}>
+            <Text bold>GPU-beschikbaarheid</Text>
+            {relevantFlavours(gpus, list).map(f => (
+              <Text key={`gpu-${f.name}`}>
+                {f.name}{'  '}
+                <Text color={f.available === true ? 'success' : f.available === false ? 'error' : 'inactive'}>{availabilityText(f)}</Text>
+              </Text>
+            ))}
+          </Box>
+        )}
+        {gpuErr && <Text dimColor>{gpuErr}</Text>}
         {list.map(ws => (
           <Box flexDirection="column" marginBottom={1} key={ws.id}>
             <Text>
@@ -219,7 +297,10 @@ export const register: Register = (on, options) => {
             )}
             <Box>
               {pending === ws.id && <Text dimColor>bezig…</Text>}
-              {pending !== ws.id && ws.status === 'paused' && (
+              {pending !== ws.id && ws.status === 'paused' && isFree(ws) === false && (
+                <Text color="warning">Geen {ws.flavour} vrij. Je krijgt een melding zodra hij vrijkomt.</Text>
+              )}
+              {pending !== ws.id && ws.status === 'paused' && isFree(ws) !== false && (
                 <Button key={`resume-${ws.id}`} variant="primary" label="Starten" onPress={() => act($, ws, 'resume')} />
               )}
               {pending !== ws.id && ws.status === 'running' && asking !== ws.id && (
