@@ -6,12 +6,13 @@ Research Cloud workspace can start right now, and lets you start and stop it.
 - **Status line** under the prompt: `SURF: markisaacsim gestopt · GPU's niet beschikbaar`
   (or `GPU's beschikbaar`, or `markisaacsim draait`).
 - **`/surf status`** prints that line once, without opening the pane or touching the workspace.
-- **`/surf`** opens a pane with the same status and **Starten** / **Stoppen** (stop asks once
-  more). While the GPUs are taken there is no Starten button: a start would only end in the
-  portal's ~10-minute timeout. `r` refreshes.
+- **`/surf`** opens a pane with the same status, the size flavour (e.g. `A10 - 2 GPU`), IP,
+  the last action's error text, and **Starten** / **Stoppen** (stop asks once more). While
+  the GPUs are taken there is no Starten button: a start would only end in the portal's
+  ~10-minute timeout. `r` refreshes.
 - **Toasts** (and a macOS notification) when your GPUs come free again, when a start or stop
-  has worked, and when a start fails (with SURF's error text, e.g. `Timeout waiting for VM to
-  resume.`).
+  has worked, when a start fails (with SURF's error text, e.g. `Timeout waiting for VM to
+  resume.`), and when it is still starting after `resume_warn_minutes` (4 min).
 - Checks every `poll_seconds` (60 s), every 10 s while the workspace is starting or stopping.
 
 ## Where the availability comes from
@@ -76,8 +77,9 @@ including the desktop app's Code tab.
 | Setting | Default | Meaning |
 |---|---|---|
 | `api_token` | – | see above |
-| `workspace` | `""` | only show workspaces whose host name (`markisaacsim`) or portal name contains this text |
+| `workspace` | `""` | only show workspaces whose name contains this text |
 | `poll_seconds` | `60` | poll interval while nothing is changing (min 15) |
+| `resume_warn_minutes` | `4` | toast when still starting after this long; `0` turns it off |
 | `notify_macos` | `true` | also raise a macOS notification |
 | `catalog_item` | Isaac catalog item | catalog item whose offerings carry the availability; empty turns the check off |
 | `co_id` | Mark's collaboration | the `co=` value of the offerings request |

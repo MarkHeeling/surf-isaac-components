@@ -10,6 +10,7 @@
 import type { GpuFlavour, Workspace } from '../types'
 
 export const WORKSPACE_API = 'https://gw.live.surfresearchcloud.nl/v1/workspace'
+export const PORTAL = 'https://portal.live.surfresearchcloud.nl/'
 
 /** Statuses during which the workspace is on its way somewhere: poll fast. */
 const TRANSITIONING = new Set(['creating', 'resuming', 'pausing', 'updating', 'rebooting', 'deleting'])
@@ -60,11 +61,11 @@ function sizeFlavour(raw: Raw): string | undefined {
 }
 
 /**
- * SURF's error text when the newest action failed. The history is in
+ * The newest action with SURF's error text when it failed. The history is in
  * `workspace_actions` (`actions` is only the list of allowed action names);
  * the text is in `result.error`, while `reason` says who started it ("API").
  */
-function lastFailure(raw: Raw): string | undefined {
+function lastAction(raw: Raw): Workspace['lastAction'] {
   const actions = raw.workspace_actions
   if (!Array.isArray(actions)) return undefined
   const last = actions
@@ -72,14 +73,15 @@ function lastFailure(raw: Raw): string | undefined {
     .filter((a): a is Raw => a !== undefined)
     .sort((a, b) => String(a.time_created ?? '').localeCompare(String(b.time_created ?? '')))
     .at(-1)
-  if (asString(last?.status)?.toLowerCase() !== 'failed') return undefined
-  const result = asObject(last?.result)
-  return asString(result?.error) ?? asString(result?.message) ?? 'onbekende fout'
-}
-
-/** The portal name is long; the host name ("markisaacsim") is what people call it. */
-function names(raw: Raw): string[] {
-  return [asString(asObject(raw.meta)?.host_name), asString(raw.name)].filter((n): n is string => n !== undefined)
+  if (!last) return undefined
+  const status = asString(last.status)?.toLowerCase()
+  const result = asObject(last.result)
+  const error = asString(result?.error) ?? asString(result?.message)
+  return {
+    type: asString(last.type),
+    status,
+    message: error ?? (status === 'failed' ? 'onbekende fout' : undefined),
+  }
 }
 
 export function parseWorkspace(value: unknown): Workspace | undefined {
@@ -88,25 +90,24 @@ export function parseWorkspace(value: unknown): Workspace | undefined {
   if (!raw || !id) return undefined
   return {
     id,
-    name: names(raw)[0] ?? id,
+    name: asString(raw.name) ?? id,
     status: (asString(raw.status) ?? (raw.active === true ? 'running' : 'unknown')).toLowerCase(),
+    ip: asString(asObject(raw.resource_meta)?.ip),
     flavour: sizeFlavour(raw),
-    failure: lastFailure(raw),
+    lastAction: lastAction(raw),
   }
 }
 
-/** Parses a (paginated) list answer and keeps those whose host or portal name contains `filter`. */
+/** Parses a (paginated) list answer and keeps the names matching `filter`. */
 export function parseList(text: string, filter: string): Workspace[] {
   const body: unknown = JSON.parse(text)
   const results = Array.isArray(body) ? body : asObject(body)?.results
   if (!Array.isArray(results)) throw new Error('unexpected answer: no results list')
   const needle = filter.trim().toLowerCase()
   return results
-    .map(asObject)
-    .filter((raw): raw is Raw => raw !== undefined)
-    .filter(raw => needle === '' || names(raw).some(n => n.toLowerCase().includes(needle)))
     .map(parseWorkspace)
     .filter((w): w is Workspace => w !== undefined)
+    .filter(w => needle === '' || w.name.toLowerCase().includes(needle))
     .sort((a, b) => a.name.localeCompare(b.name))
 }
 
@@ -115,10 +116,20 @@ export function describeChange(before: Workspace | undefined, after: Workspace):
   if (!before || before.status === after.status) return undefined
   if (before.status === 'resuming' && after.status === 'running') return `${after.name} draait weer.`
   if (before.status === 'resuming') {
-    return `${after.name}: starten mislukt${after.failure ? ` (${after.failure})` : ''}. Waarschijnlijk geen GPU's vrij.`
+    const why = after.lastAction?.status === 'failed' ? after.lastAction.message : undefined
+    return `${after.name}: starten mislukt${why ? ` (${why})` : ''}. Waarschijnlijk geen GPU's vrij.`
   }
   if (before.status === 'pausing' && after.status === 'paused') return `${after.name} is gestopt.`
   return undefined
+}
+
+/** True once a resume has run longer than `warnMinutes`. */
+export function isSlowResume(resumingSince: number | undefined, now: number, warnMinutes: number): boolean {
+  return resumingSince !== undefined && warnMinutes > 0 && now - resumingSince >= warnMinutes * 60_000
+}
+
+export function minutesSince(since: number, now: number): number {
+  return Math.floor((now - since) / 60_000)
 }
 
 /** Whether the GPUs this workspace needs are free: true, false, or undefined when unknown. */

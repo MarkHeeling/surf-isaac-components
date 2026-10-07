@@ -1,7 +1,7 @@
 {
   "name": "surf-workspace",
   "version": "0.3.0",
-  "description": "SURF Research Cloud in Claude Code: is your workspace's GPU available, start and stop it, toast when a start fails or GPUs come free",
+  "description": "SURF Research Cloud workspace status in Claude Code: status line, pane with start/stop, GPU availability, toast when a resume fails or GPUs come free",
   "author": {
     "name": "Mark Heeling"
   },
@@ -17,7 +17,7 @@
     "workspace": {
       "type": "string",
       "title": "Workspace name filter",
-      "description": "Only show workspaces whose host name or portal name contains this text (e.g. markisaacsim); empty shows all your Compute workspaces",
+      "description": "Only show workspaces whose name contains this text; empty shows all your Compute workspaces",
       "default": ""
     },
     "poll_seconds": {
@@ -26,10 +26,16 @@
       "description": "How often to check while nothing is changing; during resume/pause it checks every 10 s",
       "default": 60
     },
+    "resume_warn_minutes": {
+      "type": "number",
+      "title": "Warn after resuming for (min)",
+      "description": "Toast when a workspace is still resuming after this many minutes (often: no GPUs free)",
+      "default": 4
+    },
     "notify_macos": {
       "type": "boolean",
       "title": "macOS notification",
-      "description": "Also raise a macOS notification for the toasts",
+      "description": "Also raise a macOS notification when a resume succeeds or fails",
       "default": true
     },
     "catalog_item": {

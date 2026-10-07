@@ -1,13 +1,13 @@
 import { describe, expect, mock, test } from 'claude-code/testing'
 
-import { describeAvailabilityChange, describeChange, parseAvailability, parseList, statusLine } from '../hooks/surf'
+import { describeAvailabilityChange, describeChange, isSlowResume, parseAvailability, parseList, statusLine } from '../hooks/surf'
 
-// Shaped like the live answer (2026-10-07): the portal name is long, the host
-// name sits in meta; `actions` only lists allowed action names, the history is
-// in `workspace_actions` with the error text in `result.error`.
+// Shaped like the live answer (2026-10-07): `actions` only lists allowed
+// action names, the history is in `workspace_actions` with the error text in
+// `result.error`.
 const workspace = (status: string, actions: unknown[] = []) => ({
   id: 'ws-1',
-  name: 'Mark - Isaac Sim - Training planner',
+  name: 'markisaacsim',
   status,
   active: status === 'running',
   actions: ['resume', 'update_nsgs', 'update_storages'],
@@ -59,20 +59,19 @@ const PANE_PROPS = {
 } as const
 
 describe('parsing', () => {
-  test('finds the workspace by its host name and shows that name', () => {
-    expect(parseList(LIST, 'markisaacsim')).toEqual([
-      { id: 'ws-1', name: 'markisaacsim', status: 'paused', flavour: 'A10 - 2 GPU', failure: undefined },
+  test('keeps the filtered workspaces with status, ip and size flavour', () => {
+    expect(parseList(LIST, 'isaac')).toEqual([
+      { id: 'ws-1', name: 'markisaacsim', status: 'paused', ip: '145.38.0.1', flavour: 'A10 - 2 GPU', lastAction: undefined },
     ])
-    expect(parseList(LIST, 'training planner').map(w => w.id)).toEqual(['ws-1'])
     expect(parseList(LIST, '').length).toBe(2)
   })
 
   test('a failed newest action gives SURF\'s error text, not the reason field', () => {
     const done = { type: 'pause', status: 'done', reason: 'API', result: {}, time_created: '2026-10-01T10:00:00Z' }
     const list = parseList(JSON.stringify({ results: [workspace('paused', [FAILED_RESUME, done])] }), '')
-    expect(list[0]?.failure).toBe('Timeout waiting for VM to resume.')
+    expect(list[0]?.lastAction).toEqual({ type: 'resume', status: 'failed', message: 'Timeout waiting for VM to resume.' })
     const ok = parseList(JSON.stringify({ results: [workspace('paused', [{ ...FAILED_RESUME, time_created: '2026-10-01T00:00:00Z' }, done])] }), '')
-    expect(ok[0]?.failure).toBeUndefined()
+    expect(ok[0]?.lastAction).toEqual({ type: 'pause', status: 'done', message: undefined })
   })
 })
 
@@ -108,13 +107,19 @@ describe('transitions', () => {
   const ws = { id: 'ws-1', name: 'markisaacsim' }
 
   test('a resume that falls back to paused is a failed start, with SURF\'s reason', () => {
-    const say = describeChange({ ...ws, status: 'resuming' }, { ...ws, status: 'paused', failure: 'Timeout waiting for VM to resume.' })
+    const say = describeChange({ ...ws, status: 'resuming' }, { ...ws, status: 'paused', lastAction: { type: 'resume', status: 'failed', message: 'Timeout waiting for VM to resume.' } })
     expect(say).toBe("markisaacsim: starten mislukt (Timeout waiting for VM to resume.). Waarschijnlijk geen GPU's vrij.")
   })
 
   test('start and stop that work say so', () => {
     expect(describeChange({ ...ws, status: 'resuming' }, { ...ws, status: 'running' })).toBe('markisaacsim draait weer.')
     expect(describeChange({ ...ws, status: 'pausing' }, { ...ws, status: 'paused' })).toBe('markisaacsim is gestopt.')
+  })
+
+  test('slow resume after the threshold', () => {
+    expect(isSlowResume(0, 3 * 60_000, 4)).toBe(false)
+    expect(isSlowResume(0, 4 * 60_000, 4)).toBe(true)
+    expect(isSlowResume(undefined, 10 * 60_000, 4)).toBe(false)
   })
 
   test('no change, nothing to say', () => {

@@ -4,14 +4,17 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { GpuFlavour, Workspace } from '../types'
 import {
   FAST_POLL_MS,
+  PORTAL,
   actionUrl,
   availabilityText,
   describeAvailabilityChange,
   describeChange,
   headers,
   isAvailable,
+  isSlowResume,
   isTransitioning,
   listUrl,
+  minutesSince,
   offeringsUrl,
   parseAvailability,
   parseList,
@@ -23,8 +26,10 @@ const PANE = 'surf-workspace'
 
 const workspaces = atom({ plugin: 'surf-workspace', key: 'workspaces' } as const, [])
 const error = atom({ plugin: 'surf-workspace', key: 'error' } as const, null)
+const updatedAt = atom({ plugin: 'surf-workspace', key: 'updatedAt' } as const, null)
 const busy = atom({ plugin: 'surf-workspace', key: 'busy' } as const, null)
 const confirm = atom({ plugin: 'surf-workspace', key: 'confirm' } as const, null)
+const resumingSince = atom({ plugin: 'surf-workspace', key: 'resumingSince' } as const, {})
 const flavours = atom({ plugin: 'surf-workspace', key: 'flavours' } as const, [])
 
 const STATUS_COLOR: Record<string, string> = {
@@ -40,6 +45,7 @@ type Config = {
   token: string
   filter: string
   idleMs: number
+  warnMinutes: number
   notifyMacos: boolean
   catalogItem: string
   co: string
@@ -47,9 +53,19 @@ type Config = {
 }
 
 // Module-level bookkeeping; a reload starts it over, which only costs one early fetch.
-let cfg: Config = { token: '', filter: '', idleMs: 60_000, notifyMacos: true, catalogItem: '', co: '', products: [] }
+let cfg: Config = {
+  token: '',
+  filter: '',
+  idleMs: 60_000,
+  warnMinutes: 4,
+  notifyMacos: true,
+  catalogItem: '',
+  co: '',
+  products: [],
+}
 let lastFetch = 0
 let inFlight = false
+const warned = new Set<string>()
 
 /**
  * The token from, in order: the plugin's own setting (secure storage when the
@@ -108,6 +124,7 @@ async function refresh($: EngineInterface): Promise<void> {
   inFlight = true
   try {
     const response = await $.http.fetch(listUrl(), { headers: headers(cfg.token) })
+    const now = await $.clock.now()
     if (!response.ok) {
       const why = response.status === 401 || response.status === 403 ? 'token geweigerd' : `HTTP ${response.status}`
       await update($, error, () => why)
@@ -116,16 +133,30 @@ async function refresh($: EngineInterface): Promise<void> {
     }
     const fresh = parseList(response.text, cfg.filter)
     const before = new Map((await read($, workspaces)).map(w => [w.id, w]))
+    const since = { ...(await read($, resumingSince)) }
     for (const ws of fresh) {
       const say = describeChange(before.get(ws.id), ws)
       if (say) await tell($, say)
+
+      if (ws.status === 'resuming') {
+        const start = (since[ws.id] ??= now)
+        if (!warned.has(ws.id) && isSlowResume(start, now, cfg.warnMinutes)) {
+          warned.add(ws.id)
+          await tell($, `${ws.name} is na ${minutesSince(start, now)} min nog aan het starten; mogelijk geen GPU's vrij.`)
+        }
+      } else {
+        delete since[ws.id]
+        warned.delete(ws.id)
+      }
     }
 
     const gpus = await fetchAvailability($)
     for (const say of describeAvailabilityChange(await read($, flavours), gpus, fresh)) await tell($, say)
 
-    lastFetch = await $.clock.now()
+    lastFetch = now
     await update($, workspaces, () => fresh)
+    await update($, resumingSince, () => since)
+    await update($, updatedAt, () => now)
     await update($, flavours, () => gpus)
     await update($, error, () => null)
     $.ui.status(statusLine(fresh, null, gpus))
@@ -175,6 +206,7 @@ export const register: Register = (on, options) => {
     token: String(options.api_token ?? ''),
     filter: String(options.workspace ?? ''),
     idleMs: Math.max(15, Number(options.poll_seconds ?? 60)) * 1000,
+    warnMinutes: Number(options.resume_warn_minutes ?? 4),
     notifyMacos: options.notify_macos !== false,
     catalogItem: String(options.catalog_item ?? '').trim(),
     co: String(options.co_id ?? '').trim(),
@@ -215,6 +247,9 @@ export const register: Register = (on, options) => {
     const pending = await read($, busy)
     const asking = await read($, confirm)
     const gpus = await read($, flavours)
+    const at = await read($, updatedAt)
+    const since = await read($, resumingSince)
+    const now = await $.clock.now()
 
     return (
       <Box flexDirection="column">
@@ -229,6 +264,9 @@ export const register: Register = (on, options) => {
               <Text>
                 <Text bold>{ws.name}</Text>{'  '}
                 <Text color={STATUS_COLOR[ws.status] ?? 'text'}>{statusText(ws.status)}</Text>
+                {ws.status === 'resuming' && since[ws.id] !== undefined && (
+                  <Text dimColor> ({minutesSince(since[ws.id] ?? now, now)} min)</Text>
+                )}
                 {gpuText && (
                   <Text>
                     {'  ·  '}
@@ -236,6 +274,12 @@ export const register: Register = (on, options) => {
                   </Text>
                 )}
               </Text>
+              {(ws.flavour || ws.ip) && <Text dimColor>{[ws.flavour, ws.ip].filter(Boolean).join(' · ')}</Text>}
+              {ws.lastAction?.message && (
+                <Text dimColor wrap="wrap">
+                  Laatste actie {ws.lastAction.type ?? ''} {ws.lastAction.status ?? ''}: {ws.lastAction.message}
+                </Text>
+              )}
               <Box>
                 {pending === ws.id && <Text dimColor>bezig…</Text>}
                 {pending !== ws.id && ws.status === 'paused' && available === false && (
@@ -258,7 +302,13 @@ export const register: Register = (on, options) => {
             </Box>
           )
         })}
-        <Button key="refresh" label="Vernieuwen" hotkey="r" onPress={() => refresh($)} />
+        <Box>
+          <Button key="refresh" label="Vernieuwen" hotkey="r" onPress={() => refresh($)} />
+          <Text dimColor>
+            {' '}
+            {at ? `bijgewerkt ${Math.max(0, Math.round((now - at) / 1000))} s geleden` : 'nog niet opgehaald'} · {PORTAL}
+          </Text>
+        </Box>
       </Box>
     )
   })
