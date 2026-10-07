@@ -7,7 +7,8 @@ your SURF Research Cloud workspace and lets you start and stop it.
   available), `vol` (stopped, GPUs not available), `!` (error), for the main workspace (setting
   *Hoofdserver*, else the first). Hover shows the one-line status, e.g.
   `SURF: markisaacsim gestopt - GPU's niet beschikbaar`.
-- **Popup** (Paradaim style): one block per workspace with its status and the time of the last
+- **Side panel** (Paradaim style; click the toolbar icon to open it, it stays open beside the
+  page and follows its width): one block per workspace with its status and the time of the last
   check, flavour (`A10 - 2 GPU`), IP, the last action with SURF's error text (e.g.
   `Timeout waiting for VM to resume.`), and the buttons that work right now: **Starten** when the
   GPUs are free, **Melding als vrij** when they are taken (a start would only end in the portal's
@@ -15,7 +16,7 @@ your SURF Research Cloud workspace and lets you start and stop it.
 - **Notifications** only when a start does not work: the GPUs came free after **Melding als vrij**
   (once, then it switches itself off), a start failed (with SURF's reason), or a start still runs
   after 4 minutes. A start or stop that works gives none.
-- **Checks** only when needed: once when the popup opens, every 30 s while a workspace starts or
+- **Checks** only when needed: once when the side panel opens or is shown again, every 30 s while a workspace starts or
   stops, and every minute while **Melding als vrij** is on. Otherwise nothing, so a weekend
   without the server costs SURF nothing. Never more than one check per 20 s; after an error it
   waits 1, 2, 4 ... up to 15 minutes, follows SURF's `Retry-After`, and waits an hour after a
@@ -81,5 +82,5 @@ npm test        # node --test, no dependencies
 `surf.js` holds the API URLs, parsing and the rules (pure, tested); `worker.js` the
 fetch/compare/notify/start/stop logic with the browser behind an `io` object (tested with a
 fake gateway); `background.js` wires it to `chrome.*` and keeps a poll alarm only while
-`pollMinutes()` asks for one; `popup.*` and `options.*` are the two pages, styled in `style.css`
+`pollMinutes()` asks for one; `panel.*` (the side panel) and `options.*` are the two pages, styled in `style.css`
 with the Paradaim colours and Source Sans Pro from `fonts/` (SIL OFL 1.1, `fonts/OFL.txt`).
