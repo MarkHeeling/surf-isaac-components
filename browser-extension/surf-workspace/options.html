@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="nl">
+  <head>
+    <meta charset="utf-8" />
+    <title>SURF Workspace: instellingen</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <main class="options">
+      <h1>SURF Workspace</h1>
+      <p class="lead">Instellingen van de extensie. Ze blijven alleen in deze browser.</p>
+      <form id="form">
+        <label for="token">API-token</label>
+        <input id="token" name="token" type="password" autocomplete="off" />
+        <div class="hint">
+          Maak hem aan in het <a href="https://portal.live.surfresearchcloud.nl/profile" target="_blank" rel="noreferrer">portal</a>
+          → Profile → API tokens. Hij wordt opgeslagen in de lokale opslag van de extensie.
+        </div>
+
+        <label for="filter">Naamfilter</label>
+        <input id="filter" name="filter" type="text" />
+        <div class="hint">Alleen workspaces waarvan de naam deze tekst bevat; leeg toont al je Compute-workspaces.</div>
+
+        <label for="warnMinutes">Melding als starten langer duurt dan (min)</label>
+        <input id="warnMinutes" name="warnMinutes" type="number" min="0" step="1" />
+        <div class="hint">Melding als hij na zoveel minuten nog aan het starten is; 0 zet dit uit.</div>
+
+        <label class="check"><input id="notify" name="notify" type="checkbox" /> Systeemmeldingen tonen</label>
+
+        <details>
+          <summary>GPU-beschikbaarheid (geavanceerd)</summary>
+          <label for="catalogItem">Catalog item</label>
+          <input id="catalogItem" name="catalogItem" type="text" />
+          <div class="hint">Leeg zet de beschikbaarheidscheck uit.</div>
+          <label for="co">Collaboration (CO) id</label>
+          <input id="co" name="co" type="text" />
+          <label for="products">Producten</label>
+          <input id="products" name="products" type="text" />
+          <div class="hint">Kommagescheiden, zoals het portal ze meestuurt.</div>
+        </details>
+
+        <p><button class="primary" type="submit">Opslaan</button><span id="saved" class="saved" hidden>Opgeslagen</span></p>
+      </form>
+    </main>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>
