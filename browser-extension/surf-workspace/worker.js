@@ -50,7 +50,7 @@ const PENDING_MS = 60_000
 
 // Load on SURF: one check is the workspace list plus, while a workspace is
 // not running, the offerings. There is no check in the background unless it
-// is needed: opening the side panel (or Vernieuwen) checks once, a start or stop
+// is needed: opening the popup (or Vernieuwen) checks once, a start or stop
 // is followed every 30 s until it is done, and "Melding als vrij" checks every
 // minute until the GPUs are free (see pollMinutes). Never more than one check
 // per MIN_GAP_MS; failures back off exponentially.
@@ -279,7 +279,7 @@ export function createWorker(io) {
   /**
    * How often the background should check, in minutes, or null for not at
    * all: fast while a workspace starts or stops, slower while a workspace
-   * waits for free GPUs, otherwise only when the side panel is opened.
+   * waits for free GPUs, otherwise only when the popup is opened.
    */
   async function pollMinutes() {
     const { state } = await load()

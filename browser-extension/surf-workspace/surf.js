@@ -161,7 +161,7 @@ export function availabilityText(ws, flavours) {
 
 /**
  * Notification for a status change, only when a start did not work: a start
- * that works, or a stop, is not worth one (you asked for it, the side panel shows it).
+ * that works, or a stop, is not worth one (you asked for it, the popup shows it).
  */
 export function describeChange(before, after) {
   if (!before || before.status !== 'resuming' || after.status === 'resuming' || after.status === 'running') return undefined
