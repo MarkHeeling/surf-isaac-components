@@ -143,6 +143,6 @@ Isaac Sim/Lab loads its 3D assets (robots, environments, materials) from the clo
 
 ---
 
-## Claude Code mod: workspace status
+## Browser extension: workspace status
 
-[`claude-mod/surf-workspace`](claude-mod/surf-workspace/README.md) shows your workspaces' status in Claude Code (status line + `/surf` pane), starts/stops them, and raises a toast as soon as a resume stalls or falls back to `paused` (usually: no GPUs free), instead of waiting for the portal's timeout.
+[`browser-extension/surf-workspace`](browser-extension/surf-workspace/README.md) is an extension for Helium (or any Chromium browser) that shows whether your workspace runs and whether its GPUs are available, and starts and stops it. It notifies you when the GPUs come free or a start fails, instead of waiting for the portal's timeout.
