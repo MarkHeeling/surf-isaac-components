@@ -30,8 +30,8 @@ async function schedule() {
   if (current?.periodInMinutes !== periodInMinutes) await chrome.alarms.create('poll', { periodInMinutes })
 }
 
-async function refreshAndSchedule() {
-  await worker.refresh()
+async function refreshAndSchedule(options) {
+  await worker.refresh(options)
   await schedule()
 }
 
@@ -39,12 +39,12 @@ chrome.runtime.onInstalled.addListener(details => {
   if (details.reason === 'install') chrome.runtime.openOptionsPage()
   refreshAndSchedule()
 })
-chrome.runtime.onStartup.addListener(refreshAndSchedule)
+chrome.runtime.onStartup.addListener(() => refreshAndSchedule())
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === 'poll') refreshAndSchedule()
 })
 chrome.storage.onChanged.addListener((changes, area) => {
-  if (area === 'local' && changes.settings) refreshAndSchedule()
+  if (area === 'local' && changes.settings) refreshAndSchedule({ force: true, reset: true })
 })
 chrome.notifications.onClicked.addListener(() => chrome.action.openPopup?.().catch(() => {}))
 
