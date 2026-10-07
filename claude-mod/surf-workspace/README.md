@@ -4,7 +4,8 @@ A Claude Code mod (a plugin of function hooks) that shows your SURF Research Clo
 workspaces inside Claude Code and lets you start/stop them, so a resume that cannot get
 its GPUs shows up quickly instead of after the portal's ~10-minute timeout.
 
-- **Status line** under the prompt: `SURF: markisaacsim paused`.
+- **Status line** under the prompt: `SURF: markisaacsim paused · A10 - 2 GPU bezet`.
+- **`/surf status`** prints that status once, without opening the pane or touching the workspace.
 - **`/surf`** opens a pane per workspace: status, size flavour (e.g. `A10 - 2 GPU`), IP,
   the last action's error text, and **Starten** (resume) / **Stoppen** (pause, with a
   confirm step). `r` refreshes.
@@ -12,7 +13,8 @@ its GPUs shows up quickly instead of after the portal's ~10-minute timeout.
   `resuming`/`pausing`/….
 - **GPU availability** per flavour (`A10 - 2 GPU vrij/bezet`) in the status line and pane, read
   the way the portal's create dialog does: nothing is created. A toast when a flavour comes
-  free again, and a warning next to **Starten** while yours is taken.
+  free again. While your workspace's flavour is taken, **Starten** is hidden (and a resume is
+  refused) so you don't sit through the portal's timeout; wait for the toast instead.
 - **Toasts** (and a macOS notification) when a resume reaches `running`, when it falls back
   to `paused`/`failed` (with SURF's error text if the API gives one), and when it is still
   `resuming` after `resume_warn_minutes` (4 min): the usual sign that no GPUs are free.

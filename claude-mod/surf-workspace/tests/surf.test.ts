@@ -265,3 +265,28 @@ test('availability is polled and a flavour coming free raises a toast', { option
   expect(toasts).toContain('A10 - 2 GPU is weer beschikbaar.')
   expect(statuses).toContain('SURF: markisaacsim paused · other-box running · A10 - 2 GPU vrij')
 })
+
+test('while the flavour is taken there is no Starten button, only the wait note', { options: { api_token: 'secret-token', notify_macos: false } }, async ($, on) => {
+  const clock = mock.clock(on, { now: 1_000_000 })
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('command.register', ($, e) => ({ value: { command: e.name } }))
+  on('ui.status', () => ({ value: undefined }))
+  on('ui.toast', () => ({ value: undefined }))
+  const posts: string[] = []
+  on('http.fetch', ($, e) => {
+    if (e.init?.method === 'POST') posts.push(e.url)
+    if (e.url.includes('/offerings/')) return { value: { status: 200, ok: true, headers: {}, text: offerings(false, false) } }
+    return { value: { status: 200, ok: true, headers: {}, text: LIST } }
+  })
+
+  await $.session.start({ cwd: '/tmp', surface: 'terminal', isInteractive: true })
+  await clock.settle()
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await $.ui.mount({ plugin: 'surf-workspace', surface, component: 'Pane', requestId: 'surf-workspace', props: PANE_PROPS })
+    expect(await ui.find({ key: 'resume-ws-1' })).toBeUndefined()
+    expect(await ui.find({ type: 'Text', text: /Geen A10 - 2 GPU vrij/ })).toBeDefined()
+    await ui.unmount()
+  }
+  expect(posts).toEqual([])
+})

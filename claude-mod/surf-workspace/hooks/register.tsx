@@ -178,6 +178,12 @@ async function refresh($: EngineInterface): Promise<void> {
 
 async function act($: EngineInterface, ws: Workspace, action: 'pause' | 'resume'): Promise<void> {
   await update($, confirm, () => null)
+  const gpu = (await read($, flavours)).find(f => f.name === ws.flavour)
+  if (action === 'resume' && gpu?.available === false) {
+    // Starting without free GPUs only ends in the portal's timeout: wait for the toast instead.
+    $.ui.toast(`${ws.name} niet gestart: geen ${gpu.name} vrij.`, { timeoutMs: 10_000 })
+    return
+  }
   await update($, busy, () => ws.id)
   try {
     const response = await $.http.fetch(actionUrl(ws.id, action), {
@@ -221,7 +227,8 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'surf',
-      description: 'SURF Research Cloud workspaces: status, starten en stoppen',
+      description: 'SURF Research Cloud: paneel met status, GPU-beschikbaarheid, starten en stoppen; "/surf status" geeft alleen de status',
+      argumentHint: '[status]',
     })
     void resolveToken($).then(() => refresh($))
     $.clock.every(FAST_POLL_MS, async () => {
@@ -234,8 +241,9 @@ export const register: Register = (on, options) => {
     return next(e)
   })
 
-  on('command.run', { command: 'surf' }, async $ => {
-    await $.ui.open({ id: PANE, title: 'SURF Research Cloud' })
+  on('command.run', { command: 'surf' }, async ($, e) => {
+    // "/surf status" only reads; plain "/surf" opens the pane with the buttons.
+    if (e.args.trim() !== 'status') await $.ui.open({ id: PANE, title: 'SURF Research Cloud' })
     await refresh($)
     const err = await read($, error)
 
@@ -290,10 +298,10 @@ export const register: Register = (on, options) => {
             <Box>
               {pending === ws.id && <Text dimColor>bezig…</Text>}
               {pending !== ws.id && ws.status === 'paused' && isFree(ws) === false && (
-                <Text color="warning">Geen {ws.flavour} vrij; starten mislukt waarschijnlijk. </Text>
+                <Text color="warning">Geen {ws.flavour} vrij. Je krijgt een melding zodra hij vrijkomt.</Text>
               )}
-              {pending !== ws.id && ws.status === 'paused' && (
-                <Button key={`resume-${ws.id}`} variant={isFree(ws) === false ? 'secondary' : 'primary'} label="Starten" onPress={() => act($, ws, 'resume')} />
+              {pending !== ws.id && ws.status === 'paused' && isFree(ws) !== false && (
+                <Button key={`resume-${ws.id}`} variant="primary" label="Starten" onPress={() => act($, ws, 'resume')} />
               )}
               {pending !== ws.id && ws.status === 'running' && asking !== ws.id && (
                 <Button key={`ask-${ws.id}`} label="Stoppen" onPress={() => update($, confirm, () => ws.id)} />
