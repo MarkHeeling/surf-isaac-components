@@ -18,13 +18,19 @@ your SURF Research Cloud workspace and lets you start and stop it.
 
 ## Install in Helium
 
-1. Get this folder on your Mac (clone the repo, or download it).
+1. Download **[surf-workspace.zip](https://github.com/MarkHeeling/surf-isaac-components/releases/latest/download/surf-workspace.zip)**
+   and unzip it (double-click in Finder); you get a folder `surf-workspace`. Put it somewhere it
+   can stay, e.g. `~/Applications/surf-workspace`: Helium loads it from there.
 2. Open the extensions page (menu → Extensions → Manage extensions), switch on
-   **Developer mode**, click **Load unpacked** and pick `browser-extension/surf-workspace`.
+   **Developer mode**, click **Load unpacked** and pick that folder.
 3. The settings page opens: paste your API token and click **Opslaan**. Pin the extension
    to the toolbar to see the badge.
 
-After a `git pull`, click the reload arrow on the extension's card.
+Update: download the zip again, replace the folder's contents, and click the reload arrow on
+the extension's card. Settings and token stay. The zip is built by
+`.github/workflows/surf-workspace-extension.yml` on every change under
+`browser-extension/surf-workspace/` on `main`; bump `version` in `manifest.json` for a new
+release, otherwise the zip on the current release is replaced.
 
 ## API token
 
