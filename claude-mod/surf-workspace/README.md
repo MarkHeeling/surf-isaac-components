@@ -10,19 +10,28 @@ its GPUs shows up quickly instead of after the portal's ~10-minute timeout.
   confirm step). `r` refreshes.
 - **Polling:** every `poll_seconds` (60 s) while idle, every 10 s while a workspace is
   `resuming`/`pausing`/….
+- **GPU availability** per flavour (`A10 - 2 GPU vrij/bezet`) in the status line and pane, read
+  the way the portal's create dialog does: nothing is created. A toast when a flavour comes
+  free again, and a warning next to **Starten** while yours is taken.
 - **Toasts** (and a macOS notification) when a resume reaches `running`, when it falls back
   to `paused`/`failed` (with SURF's error text if the API gives one), and when it is still
   `resuming` after `resume_warn_minutes` (4 min): the usual sign that no GPUs are free.
 
-## What SURF offers, and what it does not
+## Where the availability comes from
 
 The SURF Research Cloud API ([first steps](https://servicedesk.surf.nl/wiki/spaces/WIKI/pages/174981256/Research+Cloud+API+-+First+Steps),
 [Swagger](https://gw.live.surfresearchcloud.nl/v1/workspace/swagger/docs/)) gives workspace
-status and the `pause`/`resume` actions. It documents **no endpoint for free GPU capacity**:
-the availability you see when creating a new workspace is not in the public docs. So this
-mod cannot tell beforehand whether a resume will succeed; it tells you as soon as the
-resume stalls or fails. If the portal's create page turns out to call an endpoint for
-availability (browser DevTools → Network while choosing a GPU flavour), it can be added.
+status and the `pause`/`resume` actions. GPU availability is not documented, but the portal's
+create dialog reads it from the catalog item's offerings:
+
+```
+GET https://gw.live.surfresearchcloud.nl/v1/application-market/catalog_items/<catalog_item>/offerings/?co=<co_id>&product=daphne-compute&product=hpcc-hdd&product=hpcc-ssd&product=daphne-gpu
+```
+
+Each size flavour there carries `"available": true | false` (`null` for the OS image). The mod
+reads that (retrying without `/v1` if the gateway answers 404) on every poll. It is the
+create dialog's check; that a resume of a paused workspace needs the same free capacity is an
+assumption, so the failed-resume toast stays as a backstop.
 
 The error fields of a failed action are not documented either; the mod looks for
 `error`/`message`/`reason`/`detail` on the workspace and its newest action. To see the raw
@@ -74,6 +83,9 @@ including the desktop app's Code tab.
 | `poll_seconds` | `60` | poll interval while nothing is changing (min 15) |
 | `resume_warn_minutes` | `4` | toast when still `resuming` after this long; `0` turns it off |
 | `notify_macos` | `true` | also raise a macOS notification |
+| `catalog_item` | Isaac catalog item | catalog item whose offerings carry the availability; empty turns the check off |
+| `co_id` | Mark's collaboration | the `co=` value of the offerings request |
+| `products` | `daphne-compute,hpcc-hdd,hpcc-ssd,daphne-gpu` | the `product=` values of the offerings request |
 
 ## Develop
 
@@ -84,4 +96,5 @@ claude plugin test claude-mod/surf-workspace
 
 `hooks/surf.ts` holds the API URLs, parsing and transition rules; `hooks/register.tsx` the
 hooks (session start, `/surf`, the pane); `tests/surf.test.ts` covers parsing, the
-transitions, the token lookup and the resume → paused toast.
+transitions, the token lookup, the resume → paused toast and the availability check
+(fixture trimmed from a real offerings answer).

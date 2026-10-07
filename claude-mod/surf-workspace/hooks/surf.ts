@@ -6,7 +6,7 @@
 // Auth is the bare token in an `authorization` header. Start/stop in the
 // portal are the `resume`/`pause` actions.
 
-import type { Workspace } from '../types'
+import type { GpuFlavour, Workspace } from '../types'
 
 export const WORKSPACE_API = 'https://gw.live.surfresearchcloud.nl/v1/workspace'
 export const PORTAL = 'https://portal.live.surfresearchcloud.nl/'
@@ -145,12 +145,71 @@ export function isSlowResume(resumingSince: number | undefined, now: number, war
 }
 
 /** The one-line status under the prompt. */
-export function statusLine(workspaces: readonly Workspace[], error: string | null): string {
+export function statusLine(
+  workspaces: readonly Workspace[],
+  error: string | null,
+  flavours: readonly GpuFlavour[] = [],
+): string {
   if (error) return `SURF: ${error}`
-  if (workspaces.length === 0) return 'SURF: geen workspace gevonden'
-  return 'SURF: ' + workspaces.map(w => `${w.name} ${w.status}`).join(' · ')
+  const parts = workspaces.map(w => `${w.name} ${w.status}`)
+  if (parts.length === 0) parts.push('geen workspace gevonden')
+  for (const f of relevantFlavours(flavours, workspaces)) parts.push(`${f.name} ${availabilityText(f)}`)
+  return 'SURF: ' + parts.join(' · ')
 }
 
 export function minutesSince(since: number, now: number): number {
   return Math.floor((now - since) / 60_000)
+}
+
+// GPU availability: the portal's create dialog reads it from the catalog
+// item's offerings, one `available` flag per flavour (true, false, or null
+// for flavours without a capacity check, like the OS image).
+
+export const CATALOG_API = 'https://gw.live.surfresearchcloud.nl/v1/application-market'
+
+export function offeringsUrl(catalogItem: string, co: string, products: readonly string[]): string {
+  const query = [`co=${encodeURIComponent(co)}`, ...products.map(p => `product=${encodeURIComponent(p)}`)].join('&')
+  return `${CATALOG_API}/catalog_items/${encodeURIComponent(catalogItem)}/offerings/?${query}`
+}
+
+/** The size flavours of every offering with their `available` flag, by name. */
+export function parseAvailability(text: string): GpuFlavour[] {
+  const body: unknown = JSON.parse(text)
+  const offerings = Array.isArray(body) ? body : asObject(body)?.results
+  if (!Array.isArray(offerings)) throw new Error('unexpected offerings answer: no results list')
+  const byName = new Map<string, GpuFlavour>()
+  for (const offering of offerings) {
+    const flavours = asObject(offering)?.flavours
+    if (!Array.isArray(flavours)) continue
+    for (const raw of flavours.map(asObject)) {
+      const name = asString(raw?.name)
+      if (!raw || !name || raw.category !== 'size') continue
+      const available = typeof raw.available === 'boolean' ? raw.available : null
+      byName.set(name, { name, available })
+    }
+  }
+  return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name))
+}
+
+/** The flavours that matter: the ones the workspaces use, else all of them. */
+export function relevantFlavours(flavours: readonly GpuFlavour[], workspaces: readonly Workspace[]): GpuFlavour[] {
+  const used = new Set(workspaces.map(w => w.flavour).filter(Boolean))
+  const mine = flavours.filter(f => used.has(f.name))
+  return mine.length > 0 ? mine : [...flavours]
+}
+
+export function availabilityText(flavour: GpuFlavour): string {
+  return flavour.available === true ? 'vrij' : flavour.available === false ? 'bezet' : 'onbekend'
+}
+
+/** Toasts for flavours that came free or ran out since the last check. */
+export function describeAvailabilityChange(before: readonly GpuFlavour[], after: readonly GpuFlavour[]): string[] {
+  const old = new Map(before.map(f => [f.name, f.available]))
+  const said: string[] = []
+  for (const f of after) {
+    const was = old.get(f.name)
+    if (was === false && f.available === true) said.push(`${f.name} is weer beschikbaar.`)
+    if (was === true && f.available === false) said.push(`${f.name} is niet meer beschikbaar.`)
+  }
+  return said
 }
