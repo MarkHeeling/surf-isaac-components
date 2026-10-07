@@ -4,17 +4,22 @@ An extension for [Helium](https://github.com/imputnet/helium) (it works in any C
 your SURF Research Cloud workspace and lets you start and stop it.
 
 - **Toolbar badge:** `aan` (running), `…` (starting or stopping), `vrij` (stopped, GPUs
-  available), `vol` (stopped, GPUs not available), `!` (error). Hover shows the one-line status,
-  e.g. `SURF: markisaacsim gestopt · GPU's niet beschikbaar`.
-- **Popup:** status, whether the GPUs are available, flavour (`A10 - 2 GPU`), IP, the last
-  action with SURF's error text (e.g. `Timeout waiting for VM to resume.`), and **Starten** /
-  **Stoppen** (stop asks once more). While the GPUs are taken there is no Starten button: a start
-  would only end in the portal's ~10-minute timeout.
-- **Notifications** when the GPUs come free, when a start or stop has worked, when a start fails
-  (with SURF's reason), and when a start is still running after 4 minutes.
-- Checks every minute, every 30 s while the workspace is starting or stopping (the shortest
-  interval the browser allows). It keeps checking while the browser is open, also with the
-  popup closed.
+  available), `vol` (stopped, GPUs not available), `!` (error), for the main workspace (setting
+  *Hoofdserver*, else the first). Hover shows the one-line status, e.g.
+  `SURF: markisaacsim gestopt - GPU's niet beschikbaar`.
+- **Popup** (Paradaim style): one block per workspace with its status and the time of the last
+  check, flavour (`A10 - 2 GPU`), IP, the last action with SURF's error text (e.g.
+  `Timeout waiting for VM to resume.`), and the buttons that work right now: **Starten** when the
+  GPUs are free, **Melding als vrij** when they are taken (a start would only end in the portal's
+  ~10-minute timeout), **Stoppen** while it runs (asks once more), and **Vernieuwen**.
+- **Notifications** only when a start does not work: the GPUs came free after **Melding als vrij**
+  (once, then it switches itself off), a start failed (with SURF's reason), or a start still runs
+  after 4 minutes. A start or stop that works gives none.
+- **Checks** only when needed: once when the popup opens, every 30 s while a workspace starts or
+  stops, and every minute while **Melding als vrij** is on. Otherwise nothing, so a weekend
+  without the server costs SURF nothing. Never more than one check per 20 s; after an error it
+  waits 1, 2, 4 ... up to 15 minutes, follows SURF's `Retry-After`, and waits an hour after a
+  refused token (or until the settings change).
 
 ## Install in Helium
 
@@ -61,7 +66,8 @@ Field names were checked against the live API on 2026-10-07.
 |---|---|---|
 | API-token | – | see above |
 | Naamfilter | empty | only show workspaces whose name contains this text |
-| Melding als starten langer duurt dan (min) | `4` | `0` turns it off |
+| Hoofdserver | empty | the workspace the badge follows (part of its name); empty is the first |
+| Waarschuwing als starten langer duurt dan (min) | `4` | `0` turns it off |
 | Systeemmeldingen tonen | on | macOS notifications through the browser |
 | Catalog item / CO / Producten | Mark's Isaac catalog item | where the availability is read |
 
@@ -74,5 +80,6 @@ npm test        # node --test, no dependencies
 
 `surf.js` holds the API URLs, parsing and the rules (pure, tested); `worker.js` the
 fetch/compare/notify/start/stop logic with the browser behind an `io` object (tested with a
-fake gateway); `background.js` wires it to `chrome.*` and polls with an alarm; `popup.*` and
-`options.*` are the two pages.
+fake gateway); `background.js` wires it to `chrome.*` and keeps a poll alarm only while
+`pollMinutes()` asks for one; `popup.*` and `options.*` are the two pages, styled in `style.css`
+with the Paradaim colours and Source Sans Pro from `fonts/` (SIL OFL 1.1, `fonts/OFL.txt`).

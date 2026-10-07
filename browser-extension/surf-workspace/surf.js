@@ -15,11 +15,13 @@ export const DEFAULT_SETTINGS = {
   token: '',
   /** Only show workspaces whose name contains this text; empty shows all. */
   filter: '',
+  /** The workspace the toolbar badge follows (part of its name); empty follows the first. */
+  main: '',
   /** Catalog item whose offerings carry the GPU availability; empty turns the check off. */
   catalogItem: 'ca0f2d7e-9bcb-4e8c-b902-e4b656dc180e',
   co: '9e2da160-b184-4c14-8157-2256df95f9ef',
   products: 'daphne-compute,hpcc-hdd,hpcc-ssd,daphne-gpu',
-  /** Notification when a start is still running after this many minutes; 0 turns it off. */
+  /** Warning when a start is still running after this many minutes; 0 turns it off. */
   warnMinutes: 4,
   notify: true,
 }
@@ -91,6 +93,7 @@ function lastAction(raw) {
     type: asString(last.type),
     status,
     message: error ?? (status === 'failed' ? 'onbekende fout' : undefined),
+    at: asString(last.time_updated) ?? asString(last.time_created),
   }
 }
 
@@ -156,23 +159,21 @@ export function availabilityText(ws, flavours) {
   return available === undefined ? undefined : available ? "GPU's beschikbaar" : "GPU's niet beschikbaar"
 }
 
-/** Notification text for a status change from `before` to `after`, if it is worth one. */
+/**
+ * Notification for a status change, only when a start did not work: a start
+ * that works, or a stop, is not worth one (you asked for it, the popup shows it).
+ */
 export function describeChange(before, after) {
-  if (!before || before.status === after.status) return undefined
-  if (before.status === 'resuming' && after.status === 'running') return `${after.name} draait weer.`
-  if (before.status === 'resuming') {
-    const why = after.lastAction?.status === 'failed' ? after.lastAction.message : undefined
-    return `${after.name}: starten mislukt${why ? ` (${why})` : ''}. Waarschijnlijk geen GPU's vrij.`
-  }
-  if (before.status === 'pausing' && after.status === 'paused') return `${after.name} is gestopt.`
-  return undefined
+  if (!before || before.status !== 'resuming' || after.status === 'resuming' || after.status === 'running') return undefined
+  const why = after.lastAction?.status === 'failed' ? after.lastAction.message : undefined
+  return `${after.name}: starten mislukt${why ? ` (${why})` : ''}. Waarschijnlijk geen GPU's vrij.`
 }
 
-/** Notifications for the workspaces whose GPUs came free since the last check. */
-export function describeAvailabilityChange(before, after, workspaces) {
+/** Notifications for the watched workspaces ("Melding als vrij") whose GPUs are free now. */
+export function describeAvailabilityChange(after, workspaces, watched) {
   return workspaces
-    .filter(w => w.status !== 'running' && isAvailable(w, before) === false && isAvailable(w, after) === true)
-    .map(w => `${w.name}: GPU's weer beschikbaar, je kunt starten.`)
+    .filter(w => watched.includes(w.id) && w.status === 'paused' && isAvailable(w, after) === true)
+    .map(w => `${w.name}: GPU's beschikbaar, je kunt starten.`)
 }
 
 /** True once a resume has run longer than `warnMinutes`. */
@@ -184,26 +185,35 @@ export function minutesSince(since, now) {
   return Math.floor((now - since) / 60_000)
 }
 
-/** The toolbar badge: short text and colour for the first workspace. */
-export function badge(workspaces, flavours, error) {
-  if (error) return { text: '!', color: '#c62828' }
-  const ws = workspaces[0]
-  if (!ws) return { text: '', color: '#757575' }
-  if (ws.status === 'running') return { text: 'aan', color: '#2e7d32' }
-  if (isTransitioning(ws.status)) return { text: '…', color: '#ef6c00' }
+/** The workspace the badge follows: the first whose name contains `main`, else the first. */
+export function mainWorkspace(workspaces, main = '') {
+  const needle = main.trim().toLowerCase()
+  return (needle && workspaces.find(w => w.name.toLowerCase().includes(needle))) || workspaces[0]
+}
+
+// Badge colours from the Paradaim palette (groen, oranje, blauw, alert, grijs).
+const BADGE = { aan: '#2e7d32', bezig: '#c1620b', vrij: '#1f4e79', vol: '#990f3d', uit: '#63625e' }
+
+/** The toolbar badge: short text and colour for the main workspace. */
+export function badge(workspaces, flavours, error, main = '') {
+  if (error) return { text: '!', color: BADGE.vol }
+  const ws = mainWorkspace(workspaces, main)
+  if (!ws) return { text: '', color: BADGE.uit }
+  if (ws.status === 'running') return { text: 'aan', color: BADGE.aan }
+  if (isTransitioning(ws.status)) return { text: '…', color: BADGE.bezig }
   if (ws.status === 'paused') {
     const available = isAvailable(ws, flavours)
-    if (available === false) return { text: 'vol', color: '#c62828' }
-    if (available === true) return { text: 'vrij', color: '#1565c0' }
-    return { text: 'uit', color: '#757575' }
+    if (available === false) return { text: 'vol', color: BADGE.vol }
+    if (available === true) return { text: 'vrij', color: BADGE.vrij }
+    return { text: 'uit', color: BADGE.uit }
   }
-  return { text: '!', color: '#c62828' }
+  return { text: '!', color: BADGE.vol }
 }
 
 /** The one-line summary, used as the toolbar tooltip. */
 export function summary(workspaces, flavours, error) {
   if (error) return `SURF: ${error}`
   if (workspaces.length === 0) return 'SURF: geen workspace gevonden'
-  const parts = workspaces.map(w => [`${w.name} ${statusText(w.status)}`, availabilityText(w, flavours)].filter(Boolean).join(' · '))
-  return 'SURF: ' + parts.join(' | ')
+  const parts = workspaces.map(w => [`${w.name} ${statusText(w.status)}`, availabilityText(w, flavours)].filter(Boolean).join(' - '))
+  return 'SURF: ' + parts.join('; ')
 }

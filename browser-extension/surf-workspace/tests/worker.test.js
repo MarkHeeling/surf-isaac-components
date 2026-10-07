@@ -40,7 +40,7 @@ test('a refresh fetches with the token and sets the badge and tooltip', async ()
   assert.match(world.seen[0].url, /\/v1\/workspace\/workspaces\/\?application_type=Compute&deleted=false&by_owner=true/)
   assert.equal(world.seen[0].auth, 'secret-token')
   assert.ok(world.seen.some(s => s.url.includes('/catalog_items/ca0f2d7e-9bcb-4e8c-b902-e4b656dc180e/offerings/?co=9e2da160')))
-  assert.deepEqual(world.badge, { text: 'vol', color: '#c62828', title: "SURF: markisaacsim gestopt · GPU's niet beschikbaar" })
+  assert.deepEqual(world.badge, { text: 'vol', color: '#990f3d', title: "SURF: markisaacsim gestopt - GPU's niet beschikbaar" })
 })
 
 test('without a token it says so and fetches nothing', async () => {
@@ -73,7 +73,7 @@ test('a start that SURF gives up on raises the failed-start notification with it
   await worker.refresh()
   world.clock += 5 * 60_000
   await worker.refresh()
-  assert.ok(world.notes.some(n => n.includes('nog aan het starten')))
+  assert.ok(world.notes.some(n => n.includes('nog steeds op')))
 
   world.status = 'paused'
   world.actions = [FAILED_RESUME]
@@ -82,17 +82,32 @@ test('a start that SURF gives up on raises the failed-start notification with it
   assert.ok(world.notes.some(n => n.includes('starten mislukt') && n.includes('Timeout waiting for VM to resume.')))
 })
 
-test('a notification when the GPUs come free', async () => {
-  const { world, worker } = setup()
+test('GPUs coming free: no notification unless "Melding als vrij" is on, then one and it switches off', async () => {
+  const { world, worker, state } = setup()
   await worker.refresh()
   world.free = true
   world.clock += 60_000
   await worker.refresh()
-  assert.deepEqual(world.notes, ["markisaacsim: GPU's weer beschikbaar, je kunt starten."])
+  assert.deepEqual(world.notes, [])
   assert.equal(world.badge.text, 'vrij')
+
+  world.free = false
+  world.clock += 60_000
+  await worker.refresh()
+  await worker.watch('ws-1', true)
+  assert.equal(await worker.pollMinutes(), 1)
+  world.clock += 60_000
+  await worker.refresh()
+  assert.deepEqual(world.notes, [])
+  world.free = true
+  world.clock += 60_000
+  await worker.refresh()
+  assert.deepEqual(world.notes, ["markisaacsim: GPU's beschikbaar, je kunt starten."])
+  assert.deepEqual(state().watch, [])
+  assert.equal(await worker.pollMinutes(), null)
 })
 
-test('stopping a running workspace posts pause and says when it is stopped', async () => {
+test('stopping a running workspace posts pause and gives no notification when it is stopped', async () => {
   const { world, worker } = setup({ status: 'running' })
   await worker.refresh()
   await worker.act('ws-1', 'pause')
@@ -100,7 +115,19 @@ test('stopping a running workspace posts pause and says when it is stopped', asy
   world.status = 'paused'
   world.clock += 90_000
   await worker.refresh()
-  assert.deepEqual(world.notes, ['markisaacsim is gestopt.'])
+  assert.deepEqual(world.notes, [])
+})
+
+test('background checks only while starting or stopping, or while waiting for free GPUs', async () => {
+  const { world, worker } = setup({ free: true })
+  await worker.refresh()
+  assert.equal(await worker.pollMinutes(), null)
+  await worker.act('ws-1', 'resume')
+  assert.equal(await worker.pollMinutes(), 0.5)
+  world.status = 'running'
+  world.clock += 90_000
+  await worker.refresh()
+  assert.equal(await worker.pollMinutes(), null)
 })
 
 test('checks are rate-limited: popup opens and Vernieuwen within 20 s do not reach SURF', async () => {

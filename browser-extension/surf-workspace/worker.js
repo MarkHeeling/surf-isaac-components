@@ -29,6 +29,8 @@ export const EMPTY_STATE = {
   resumingSince: {},
   /** Workspace ids that already got the slow-start notification. */
   warned: [],
+  /** Workspace ids with "Melding als vrij" on: one notification when their GPUs are free. */
+  watch: [],
   /** Workspace id with an action in flight. */
   busy: null,
   /** Per workspace id the transition just asked for, until SURF shows it: {status, at}. */
@@ -47,10 +49,14 @@ export const EMPTY_STATE = {
 const PENDING_MS = 60_000
 
 // Load on SURF: one check is the workspace list plus, while a workspace is
-// not running, the offerings. The alarm asks every minute (30 s while
-// starting or stopping); opening the popup or pressing Vernieuwen asks too,
-// but never more than once per MIN_GAP_MS. Failures back off exponentially.
+// not running, the offerings. There is no check in the background unless it
+// is needed: opening the popup (or Vernieuwen) checks once, a start or stop
+// is followed every 30 s until it is done, and "Melding als vrij" checks every
+// minute until the GPUs are free (see pollMinutes). Never more than one check
+// per MIN_GAP_MS; failures back off exponentially.
 export const MIN_GAP_MS = 20_000
+export const FAST_MINUTES = 0.5
+export const WATCH_MINUTES = 1
 const BACKOFF_BASE_MS = 60_000
 const BACKOFF_MAX_MS = 15 * 60_000
 /** A refused token is not retried on its own; a new token in the settings retries at once. */
@@ -88,18 +94,18 @@ export function createWorker(io) {
     return { settings: { ...DEFAULT_SETTINGS, ...settings }, state: { ...EMPTY_STATE, ...state } }
   }
 
-  async function show(state) {
-    const b = badge(state.workspaces, state.flavours, state.error)
+  async function show(state, settings) {
+    const b = badge(state.workspaces, state.flavours, state.error, settings.main)
     await io.setBadge({ ...b, title: summary(state.workspaces, state.flavours, state.error) })
   }
 
   /** Records a failed check and when the next one may run. */
-  async function fail(state, why, { now = io.now(), wait } = {}) {
+  async function fail(state, settings, why, { now = io.now(), wait } = {}) {
     const failures = state.failures + 1
     const retryAt = now + Math.max(wait ?? 0, backoffMs(failures))
     const next = { ...state, error: why, failures, retryAt, lastCheckAt: now }
     await io.save(next)
-    await show(next)
+    await show(next, settings)
     return next
   }
 
@@ -136,7 +142,7 @@ export function createWorker(io) {
     if (!settings.token) {
       const next = { ...state, error: 'geen API-token (zie Instellingen)' }
       await io.save(next)
-      await show(next)
+      await show(next, settings)
       return next
     }
     if (!force && state.retryAt !== null && now < state.retryAt) return state
@@ -144,9 +150,9 @@ export function createWorker(io) {
     try {
       const response = await io.fetch(listUrl(), { headers: headers(settings.token) })
       if (!response.ok) {
-        if (response.status === 401 || response.status === 403) return fail(state, 'token geweigerd', { now, wait: REFUSED_TOKEN_MS })
+        if (response.status === 401 || response.status === 403) return fail(state, settings, 'token geweigerd', { now, wait: REFUSED_TOKEN_MS })
         const wait = retryAfterMs(response, now)
-        return fail(state, response.status === 429 ? 'te veel verzoeken, even wachten' : `HTTP ${response.status}`, { now, wait })
+        return fail(state, settings, response.status === 429 ? 'te veel verzoeken, even wachten' : `HTTP ${response.status}`, { now, wait })
       }
       const pending = { ...state.pending }
       const fresh = parseList(await response.text(), settings.filter).map(ws => {
@@ -172,7 +178,7 @@ export function createWorker(io) {
           const start = (since[ws.id] ??= now)
           if (!warned.has(ws.id) && isSlowResume(start, now, Number(settings.warnMinutes))) {
             warned.add(ws.id)
-            say.push(`${ws.name} is na ${minutesSince(start, now)} min nog aan het starten; mogelijk geen GPU's vrij.`)
+            say.push(`${ws.name} start na ${minutesSince(start, now)} min nog steeds op. Mogelijk geen GPU's vrij.`)
           }
         } else {
           delete since[ws.id]
@@ -185,7 +191,14 @@ export function createWorker(io) {
       const { flavours, path } = needsGpus
         ? await fetchAvailability(settings, state.offeringsPath)
         : { flavours: state.flavours, path: state.offeringsPath }
-      if (needsGpus) say.push(...describeAvailabilityChange(state.flavours, flavours, fresh))
+      // "Melding als vrij": one notification, then it switches itself off; it also
+      // ends when the workspace is no longer stopped (started from the portal) or gone.
+      const free = needsGpus ? describeAvailabilityChange(flavours, fresh, state.watch) : []
+      say.push(...free)
+      const watch = state.watch.filter(id => {
+        const ws = fresh.find(w => w.id === id)
+        return ws?.status === 'paused' && isAvailable(ws, flavours) !== true
+      })
 
       const next = {
         ...state,
@@ -195,6 +208,7 @@ export function createWorker(io) {
         updatedAt: now,
         resumingSince: since,
         warned: [...warned],
+        watch,
         pending,
         lastCheckAt: now,
         failures: 0,
@@ -202,11 +216,11 @@ export function createWorker(io) {
         offeringsPath: path,
       }
       await io.save(next)
-      await show(next)
+      await show(next, settings)
       if (settings.notify) for (const text of say) await io.notify(text)
       return next
     } catch (err) {
-      return fail(state, err instanceof Error ? err.message : String(err), { now })
+      return fail(state, settings, err instanceof Error ? err.message : String(err), { now })
     }
   }
 
@@ -255,10 +269,24 @@ export function createWorker(io) {
     return refused
   }
 
-  async function isMoving() {
+  /** Turns "Melding als vrij" on or off for one workspace. */
+  async function watch(id, on) {
     const { state } = await load()
-    return state.workspaces.some(w => isTransitioning(w.status))
+    const rest = state.watch.filter(w => w !== id)
+    await io.save({ ...state, watch: on ? [...rest, id] : rest })
   }
 
-  return { refresh, act, isMoving }
+  /**
+   * How often the background should check, in minutes, or null for not at
+   * all: fast while a workspace starts or stops, slower while a workspace
+   * waits for free GPUs, otherwise only when the popup is opened.
+   */
+  async function pollMinutes() {
+    const { state } = await load()
+    if (state.workspaces.some(w => isTransitioning(w.status))) return FAST_MINUTES
+    if (state.watch.length > 0) return WATCH_MINUTES
+    return null
+  }
+
+  return { refresh, act, watch, pollMinutes }
 }
