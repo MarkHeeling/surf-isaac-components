@@ -20,9 +20,15 @@ describe('parsing', () => {
       type: 'resume',
       status: 'failed',
       message: 'Timeout waiting for VM to resume.',
+      at: '2026-10-07T13:03:00Z',
     })
     const old = { ...FAILED_RESUME, time_created: '2026-10-01T00:00:00Z' }
-    assert.deepEqual(parseList(list(workspace('paused', [old, done])), '')[0].lastAction, { type: 'pause', status: 'done', message: undefined })
+    assert.deepEqual(parseList(list(workspace('paused', [old, done])), '')[0].lastAction, {
+      type: 'pause',
+      status: 'done',
+      message: undefined,
+      at: '2026-10-01T10:00:00Z',
+    })
   })
 
   test('reads the size flavours and their available flag', () => {
@@ -37,8 +43,8 @@ describe('status', () => {
   const ws = [{ id: 'ws-1', name: 'markisaacsim', status: 'paused', flavour: 'A10 - 2 GPU' }]
 
   test('the summary says whether the GPUs are available', () => {
-    assert.equal(summary(ws, parseAvailability(offerings(true, false)), null), "SURF: markisaacsim gestopt · GPU's niet beschikbaar")
-    assert.equal(summary(ws, parseAvailability(offerings(false, true)), null), "SURF: markisaacsim gestopt · GPU's beschikbaar")
+    assert.equal(summary(ws, parseAvailability(offerings(true, false)), null), "SURF: markisaacsim gestopt - GPU's niet beschikbaar")
+    assert.equal(summary(ws, parseAvailability(offerings(false, true)), null), "SURF: markisaacsim gestopt - GPU's beschikbaar")
     assert.equal(summary([{ ...ws[0], status: 'running' }], parseAvailability(offerings(false, false)), null), 'SURF: markisaacsim draait')
     assert.equal(summary([], [], 'token geweigerd'), 'SURF: token geweigerd')
   })
@@ -49,6 +55,14 @@ describe('status', () => {
     assert.equal(badge(ws, parseAvailability(offerings(false, true)), null).text, 'vrij')
     assert.equal(badge(ws, parseAvailability(offerings(true, false)), null).text, 'vol')
     assert.equal(badge(ws, [], 'HTTP 500').text, '!')
+  })
+
+  test('the badge follows the main workspace from the settings, else the first', () => {
+    const two = [...ws, { id: 'ws-2', name: 'tweede', status: 'running', flavour: 'A10 - 1 GPU' }]
+    const free = parseAvailability(offerings(false, true))
+    assert.equal(badge(two, free, null).text, 'vrij')
+    assert.equal(badge(two, free, null, 'TWEE').text, 'aan')
+    assert.equal(badge(two, free, null, 'bestaat niet').text, 'vrij')
   })
 })
 
@@ -63,21 +77,20 @@ describe('transitions', () => {
     )
   })
 
-  test('start and stop that work say so; no change says nothing', () => {
-    assert.equal(describeChange({ ...ws, status: 'resuming' }, { ...ws, status: 'running' }), 'markisaacsim draait weer.')
-    assert.equal(describeChange({ ...ws, status: 'pausing' }, { ...ws, status: 'paused' }), 'markisaacsim is gestopt.')
+  test('a start or stop that works says nothing; neither does no change', () => {
+    assert.equal(describeChange({ ...ws, status: 'resuming' }, { ...ws, status: 'running' }), undefined)
+    assert.equal(describeChange({ ...ws, status: 'pausing' }, { ...ws, status: 'paused' }), undefined)
     assert.equal(describeChange({ ...ws, status: 'running' }, { ...ws, status: 'running' }), undefined)
     assert.equal(describeChange(undefined, { ...ws, status: 'running' }), undefined)
   })
 
-  test("a notification only when the workspace's own GPUs come free", () => {
+  test("GPUs free: a notification only for a watched workspace and its own flavour", () => {
     const paused = [{ ...ws, status: 'paused' }]
-    const taken = parseAvailability(offerings(false, false))
-    assert.deepEqual(describeAvailabilityChange(taken, parseAvailability(offerings(false, true)), paused), [
-      "markisaacsim: GPU's weer beschikbaar, je kunt starten.",
+    assert.deepEqual(describeAvailabilityChange(parseAvailability(offerings(false, true)), paused, ['ws-1']), [
+      "markisaacsim: GPU's beschikbaar, je kunt starten.",
     ])
-    assert.deepEqual(describeAvailabilityChange(taken, parseAvailability(offerings(true, false)), paused), [])
-    assert.deepEqual(describeAvailabilityChange([], parseAvailability(offerings(true, true)), paused), [])
+    assert.deepEqual(describeAvailabilityChange(parseAvailability(offerings(false, true)), paused, []), [])
+    assert.deepEqual(describeAvailabilityChange(parseAvailability(offerings(true, false)), paused, ['ws-1']), [])
   })
 
   test('slow resume after the threshold', () => {

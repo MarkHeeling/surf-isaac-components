@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "SURF Workspace",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Status, GPU-beschikbaarheid, starten en stoppen van je SURF Research Cloud-workspace.",
   "icons": { "16": "icons/icon16.png", "32": "icons/icon32.png", "48": "icons/icon48.png", "128": "icons/icon128.png" },
   "action": {

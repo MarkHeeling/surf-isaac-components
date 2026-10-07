@@ -7,39 +7,59 @@
   </head>
   <body>
     <main class="options">
-      <h1>SURF Workspace</h1>
-      <p class="lead">Instellingen van de extensie. Ze blijven alleen in deze browser.</p>
+      <h1>Instellingen</h1>
+      <p class="lead">SURF Workspace. Alles blijft in deze browser.</p>
       <form id="form">
-        <label for="token">API-token</label>
-        <input id="token" name="token" type="password" autocomplete="off" />
-        <div class="hint">
-          Maak hem aan in het <a href="https://portal.live.surfresearchcloud.nl/profile" target="_blank" rel="noreferrer">portal</a>
-          → Profile → API tokens. Hij wordt opgeslagen in de lokale opslag van de extensie.
+        <div class="field">
+          <label for="token">API-token</label>
+          <input id="token" name="token" type="password" autocomplete="off" />
+          <div class="hint">
+            Aan te maken in het <a href="https://portal.live.surfresearchcloud.nl/profile" target="_blank" rel="noreferrer">portal</a>,
+            onder Profile - API tokens.
+          </div>
         </div>
 
-        <label for="filter">Naamfilter</label>
-        <input id="filter" name="filter" type="text" />
-        <div class="hint">Alleen workspaces waarvan de naam deze tekst bevat; leeg toont al je Compute-workspaces.</div>
+        <div class="field">
+          <label for="filter">Naamfilter</label>
+          <input id="filter" name="filter" type="text" />
+          <div class="hint">Alleen workspaces waarvan de naam deze tekst bevat. Leeg toont alle Compute-workspaces.</div>
+        </div>
 
-        <label for="warnMinutes">Melding als starten langer duurt dan (min)</label>
-        <input id="warnMinutes" name="warnMinutes" type="number" min="0" step="1" />
-        <div class="hint">Melding als hij na zoveel minuten nog aan het starten is; 0 zet dit uit.</div>
+        <div class="field">
+          <label for="main">Hoofdserver</label>
+          <input id="main" name="main" type="text" />
+          <div class="hint">Het badge op het icoon volgt deze workspace (deel van de naam). Leeg volgt de eerste.</div>
+        </div>
 
-        <label class="check"><input id="notify" name="notify" type="checkbox" /> Systeemmeldingen tonen</label>
+        <div class="field">
+          <label for="warnMinutes">Waarschuwing als starten langer duurt dan (min)</label>
+          <input id="warnMinutes" name="warnMinutes" type="number" min="0" step="1" />
+          <div class="hint">0 zet de waarschuwing uit.</div>
+        </div>
+
+        <div class="field check">
+          <label><input id="notify" name="notify" type="checkbox" /> Systeemmeldingen tonen</label>
+        </div>
 
         <details>
           <summary>GPU-beschikbaarheid (geavanceerd)</summary>
-          <label for="catalogItem">Catalog item</label>
-          <input id="catalogItem" name="catalogItem" type="text" />
-          <div class="hint">Leeg zet de beschikbaarheidscheck uit.</div>
-          <label for="co">Collaboration (CO) id</label>
-          <input id="co" name="co" type="text" />
-          <label for="products">Producten</label>
-          <input id="products" name="products" type="text" />
-          <div class="hint">Kommagescheiden, zoals het portal ze meestuurt.</div>
+          <div class="field">
+            <label for="catalogItem">Catalog item</label>
+            <input id="catalogItem" name="catalogItem" type="text" />
+            <div class="hint">Leeg zet de beschikbaarheidscheck uit.</div>
+          </div>
+          <div class="field">
+            <label for="co">Collaboration (CO) id</label>
+            <input id="co" name="co" type="text" />
+          </div>
+          <div class="field">
+            <label for="products">Producten</label>
+            <input id="products" name="products" type="text" />
+            <div class="hint">Kommagescheiden, zoals het portal ze meestuurt.</div>
+          </div>
         </details>
 
-        <p><button class="primary" type="submit">Opslaan</button><span id="saved" class="saved" hidden>Opgeslagen</span></p>
+        <div class="save"><button class="primary" type="submit">Opslaan</button><span id="saved" class="saved" hidden>Opgeslagen</span></div>
       </form>
     </main>
     <script type="module" src="options.js"></script>

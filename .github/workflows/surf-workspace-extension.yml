@@ -34,7 +34,7 @@ jobs:
       - name: Zip
         run: |
           mkdir -p "$RUNNER_TEMP/zip/surf-workspace"
-          cp -r manifest.json background.js worker.js surf.js popup.html popup.js options.html options.js style.css icons README.md \
+          cp -r manifest.json background.js worker.js surf.js popup.html popup.js options.html options.js style.css icons fonts README.md \
             "$RUNNER_TEMP/zip/surf-workspace/"
           (cd "$RUNNER_TEMP/zip" && zip -qr surf-workspace.zip surf-workspace)
           echo "VERSION=$(jq -r .version manifest.json)" >> "$GITHUB_ENV"
