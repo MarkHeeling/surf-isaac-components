@@ -1,0 +1,54 @@
+# Builds the SURF Workspace browser extension as a zip and attaches it to a
+# GitHub release, so it can be downloaded instead of checked out:
+# https://github.com/MarkHeeling/surf-isaac-components/releases/latest/download/surf-workspace.zip
+# The release tag follows the version in manifest.json; pushing without a
+# version bump replaces the zip on the existing release.
+
+name: surf-workspace extension
+
+on:
+  push:
+    branches: [main]
+    paths: ['browser-extension/surf-workspace/**', '.github/workflows/surf-workspace-extension.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: browser-extension/surf-workspace
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test
+        run: npm test
+
+      - name: Zip
+        run: |
+          mkdir -p "$RUNNER_TEMP/zip/surf-workspace"
+          cp -r manifest.json background.js worker.js surf.js popup.html popup.js options.html options.js style.css icons README.md \
+            "$RUNNER_TEMP/zip/surf-workspace/"
+          (cd "$RUNNER_TEMP/zip" && zip -qr surf-workspace.zip surf-workspace)
+          echo "VERSION=$(jq -r .version manifest.json)" >> "$GITHUB_ENV"
+
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="surf-workspace-v$VERSION"
+          zip="$RUNNER_TEMP/zip/surf-workspace.zip"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$zip" --clobber
+          else
+            gh release create "$tag" "$zip" --target "$GITHUB_SHA" --latest \
+              --title "SURF Workspace $VERSION" \
+              --notes "Browser extension for Helium/Chromium. Download surf-workspace.zip, unzip it and load the folder with Load unpacked (see browser-extension/surf-workspace/README.md)."
+          fi
