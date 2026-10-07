@@ -1,6 +1,7 @@
 // Service worker: wires the worker to chrome.* and keeps the 'poll' alarm
 // only while a check in the background is needed (a start or stop running,
-// or "Melding als vrij" on). Otherwise SURF is only asked when the popup opens.
+// or "Melding als vrij" on). Otherwise SURF is only asked when the side panel
+// is opened or shown again.
 
 import { createWorker } from './worker.js'
 
@@ -47,9 +48,14 @@ chrome.alarms.onAlarm.addListener(alarm => {
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.settings) refreshAndSchedule({ force: true, reset: true })
 })
-chrome.notifications.onClicked.addListener(() => chrome.action.openPopup?.().catch(() => {}))
+// The toolbar icon opens the side panel (panel.html) instead of a popup.
+chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {})
+chrome.notifications.onClicked.addListener(async () => {
+  const win = await chrome.windows.getLastFocused().catch(() => undefined)
+  if (win?.id !== undefined) chrome.sidePanel.open({ windowId: win.id }).catch(() => {})
+})
 
-// Messages from the popup: {type: 'refresh'}, {type: 'act', id, action} or {type: 'watch', id, on}.
+// Messages from the side panel: {type: 'refresh'}, {type: 'act', id, action} or {type: 'watch', id, on}.
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   let run
   if (message?.type === 'act') {

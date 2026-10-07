@@ -148,7 +148,10 @@ chrome.storage.onChanged.addListener((changes, area) => {
   if (area === 'local' && changes.state) render(changes.state.newValue)
 })
 
-// Show the last known state at once, then ask SURF (at most once per 20 s).
+// Show the last known state at once, then ask SURF; again whenever the side
+// panel is shown or its window gets focus (the worker allows one check per 20 s).
 const { state } = await chrome.storage.local.get('state')
 render(state ?? null)
 send({ type: 'refresh' })
+document.addEventListener('visibilitychange', () => document.visibilityState === 'visible' && send({ type: 'refresh' }))
+window.addEventListener('focus', () => send({ type: 'refresh' }))

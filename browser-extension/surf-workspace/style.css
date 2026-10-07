@@ -35,19 +35,19 @@ body {
 a { color: var(--blauw); }
 a:hover { color: var(--blauw-hover); }
 
-/* Popup */
-.popup { width: 340px; }
+/* Side panel: fills the panel's width, whatever the user drags it to. */
+.panel { min-height: 100vh; }
 .top {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 6px 8px 6px 20px;
+  padding: 4px 6px 4px 16px;
   border-bottom: 1px solid var(--lijn);
 }
-.top .title { font-size: 13.5px; font-weight: 600; color: var(--grijs); }
+.top .title { font-size: 13px; font-weight: 600; color: var(--grijs); }
 button.icon {
-  width: 40px;
-  height: 40px;
+  width: 36px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -58,33 +58,33 @@ button.icon {
   cursor: pointer;
 }
 button.icon:hover { color: var(--ink); }
-.ws { padding: 16px 20px 20px; border-bottom: 1px solid var(--lijn); }
-.ws h1 { margin: 0 0 12px; font-size: 20px; line-height: 1.2; font-weight: 600; }
+.ws { padding: 14px 16px 16px; border-bottom: 1px solid var(--lijn); }
+.ws h1 { margin: 0 0 10px; font-size: 16px; line-height: 1.3; font-weight: 600; }
 .status {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  padding: 2px 0 2px 12px;
-  border-left: 5px solid var(--grijs);
+  padding: 2px 0 2px 10px;
+  border-left: 4px solid var(--grijs);
 }
-.status strong { font-size: 16px; line-height: 1.25; font-weight: 600; }
-.status span { font-size: 13.5px; color: var(--grijs); }
+.status strong { font-size: 14.5px; line-height: 1.3; font-weight: 600; }
+.status span { font-size: 13px; color: var(--grijs); }
 .status .watching { color: var(--blauw); }
 .status.groen { border-color: var(--groen); }
 .status.oranje { border-color: var(--oranje); }
 .status.blauw { border-color: var(--blauw); }
 .status.rood { border-color: var(--rood); }
-dl { margin: 14px 0 0; border-bottom: 1px solid var(--lijn); }
+dl { margin: 12px 0 0; border-bottom: 1px solid var(--lijn); font-size: 13.5px; }
 dl > div {
   display: grid;
-  grid-template-columns: 100px minmax(0, 1fr);
+  grid-template-columns: 92px minmax(0, 1fr);
   column-gap: 12px;
-  padding: 6px 0;
+  padding: 5px 0;
   border-top: 1px solid var(--lijn);
 }
 dt { color: var(--grijs); }
 dd { margin: 0; overflow-wrap: anywhere; }
-dd.mono { font-size: 12.5px; padding-top: 1px; }
+dd.mono { font-size: 12px; padding-top: 1px; }
 pre.error {
   margin: 10px 0 0;
   padding: 8px 10px;
@@ -94,17 +94,17 @@ pre.error {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
-.actions { display: flex; gap: 8px; margin-top: 16px; }
+.actions { display: flex; gap: 8px; margin-top: 14px; }
 .actions button { flex: 1 1 0; }
 button {
-  height: 40px;
-  padding: 0 14px;
+  height: 34px;
+  padding: 0 12px;
   border-radius: 0;
   border: 1px solid var(--lijn);
   background: var(--oppervlak);
   color: var(--ink);
   font: inherit;
-  font-size: 15px;
+  font-size: 14px;
   cursor: pointer;
 }
 button.primary { background: var(--blauw); border-color: var(--blauw); color: #ffffff; font-weight: 600; }
