@@ -10,6 +10,7 @@ import {
   describeAvailabilityChange,
   describeChange,
   headers,
+  isAvailable,
   isSlowResume,
   isTransitioning,
   listUrl,
@@ -17,8 +18,8 @@ import {
   offeringsUrl,
   parseAvailability,
   parseList,
-  relevantFlavours,
   statusLine,
+  statusText,
 } from './surf'
 
 const PANE = 'surf-workspace'
@@ -30,7 +31,6 @@ const busy = atom({ plugin: 'surf-workspace', key: 'busy' } as const, null)
 const confirm = atom({ plugin: 'surf-workspace', key: 'confirm' } as const, null)
 const resumingSince = atom({ plugin: 'surf-workspace', key: 'resumingSince' } as const, {})
 const flavours = atom({ plugin: 'surf-workspace', key: 'flavours' } as const, [])
-const flavoursError = atom({ plugin: 'surf-workspace', key: 'flavoursError' } as const, null)
 
 const STATUS_COLOR: Record<string, string> = {
   running: 'success',
@@ -97,11 +97,11 @@ async function tell($: EngineInterface, text: string): Promise<void> {
 
 /**
  * Reads the catalog item's offerings, where the portal's create dialog gets
- * its GPU availability; nothing is created. Toasts when a flavour comes free.
+ * its GPU availability; nothing is created. Empty when the check fails, so
+ * the status shows nothing rather than a stale answer.
  */
-async function refreshAvailability($: EngineInterface): Promise<GpuFlavour[]> {
-  const known = await read($, flavours)
-  if (!cfg.catalogItem || !cfg.co) return known
+async function fetchAvailability($: EngineInterface): Promise<GpuFlavour[]> {
+  if (!cfg.catalogItem || !cfg.co) return []
   try {
     const url = offeringsUrl(cfg.catalogItem, cfg.co, cfg.products)
     let response = await $.http.fetch(url, { headers: headers(cfg.token) })
@@ -109,18 +109,9 @@ async function refreshAvailability($: EngineInterface): Promise<GpuFlavour[]> {
       // The portal itself calls the gateway without the /v1 prefix.
       response = await $.http.fetch(url.replace('/v1/', '/'), { headers: headers(cfg.token) })
     }
-    if (!response.ok) {
-      await update($, flavoursError, () => `beschikbaarheid: HTTP ${response.status}`)
-      return known
-    }
-    const fresh = parseAvailability(response.text)
-    for (const text of describeAvailabilityChange(known, fresh)) await tell($, text)
-    await update($, flavours, () => fresh)
-    await update($, flavoursError, () => null)
-    return fresh
-  } catch (err) {
-    await update($, flavoursError, () => `beschikbaarheid: ${err instanceof Error ? err.message : String(err)}`)
-    return known
+    return response.ok ? parseAvailability(response.text) : []
+  } catch {
+    return []
   }
 }
 
@@ -143,10 +134,9 @@ async function refresh($: EngineInterface): Promise<void> {
     const fresh = parseList(response.text, cfg.filter)
     const before = new Map((await read($, workspaces)).map(w => [w.id, w]))
     const since = { ...(await read($, resumingSince)) }
-
     for (const ws of fresh) {
-      const change = describeChange(before.get(ws.id), ws)
-      if (change.say) await tell($, change.say)
+      const say = describeChange(before.get(ws.id), ws)
+      if (say) await tell($, say)
 
       if (ws.status === 'resuming') {
         const start = (since[ws.id] ??= now)
@@ -160,11 +150,14 @@ async function refresh($: EngineInterface): Promise<void> {
       }
     }
 
-    const gpus = await refreshAvailability($)
+    const gpus = await fetchAvailability($)
+    for (const say of describeAvailabilityChange(await read($, flavours), gpus, fresh)) await tell($, say)
+
     lastFetch = now
     await update($, workspaces, () => fresh)
     await update($, resumingSince, () => since)
     await update($, updatedAt, () => now)
+    await update($, flavours, () => gpus)
     await update($, error, () => null)
     $.ui.status(statusLine(fresh, null, gpus))
   } catch (err) {
@@ -178,10 +171,9 @@ async function refresh($: EngineInterface): Promise<void> {
 
 async function act($: EngineInterface, ws: Workspace, action: 'pause' | 'resume'): Promise<void> {
   await update($, confirm, () => null)
-  const gpu = (await read($, flavours)).find(f => f.name === ws.flavour)
-  if (action === 'resume' && gpu?.available === false) {
+  if (action === 'resume' && isAvailable(ws, await read($, flavours)) === false) {
     // Starting without free GPUs only ends in the portal's timeout: wait for the toast instead.
-    $.ui.toast(`${ws.name} niet gestart: geen ${gpu.name} vrij.`, { timeoutMs: 10_000 })
+    $.ui.toast(`${ws.name} niet gestart: GPU's niet beschikbaar.`, { timeoutMs: 10_000 })
     return
   }
   await update($, busy, () => ws.id)
@@ -192,7 +184,7 @@ async function act($: EngineInterface, ws: Workspace, action: 'pause' | 'resume'
       body: '{}',
     })
     if (!response.ok) {
-      const why = `${action === 'resume' ? 'starten' : 'pauzeren'} geweigerd: HTTP ${response.status} ${response.text.slice(0, 200)}`
+      const why = `${action === 'resume' ? 'starten' : 'stoppen'} geweigerd: HTTP ${response.status} ${response.text.slice(0, 200)}`
       await update($, error, () => why)
       $.ui.toast(`${ws.name}: ${why}`, { timeoutMs: 10_000 })
       return
@@ -227,14 +219,13 @@ export const register: Register = (on, options) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'surf',
-      description: 'SURF Research Cloud: paneel met status, GPU-beschikbaarheid, starten en stoppen; "/surf status" geeft alleen de status',
+      description: 'SURF Research Cloud: of je server beschikbaar is, starten en stoppen; "/surf status" geeft alleen de status',
       argumentHint: '[status]',
     })
     void resolveToken($).then(() => refresh($))
     $.clock.every(FAST_POLL_MS, async () => {
       const now = await $.clock.now()
-      const list = await read($, workspaces)
-      const isMoving = list.some(w => isTransitioning(w.status))
+      const isMoving = (await read($, workspaces)).some(w => isTransitioning(w.status))
       if (isMoving || now - lastFetch >= cfg.idleMs) await refresh($)
     })
 
@@ -245,77 +236,72 @@ export const register: Register = (on, options) => {
     // "/surf status" only reads; plain "/surf" opens the pane with the buttons.
     if (e.args.trim() !== 'status') await $.ui.open({ id: PANE, title: 'SURF Research Cloud' })
     await refresh($)
-    const err = await read($, error)
 
-    return { text: statusLine(await read($, workspaces), err, await read($, flavours)) }
+    return { text: statusLine(await read($, workspaces), await read($, error), await read($, flavours)) }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
     const { Box, Text, Button } = $.ui.resolve(e)
     const list = await read($, workspaces)
     const err = await read($, error)
-    const at = await read($, updatedAt)
     const pending = await read($, busy)
     const asking = await read($, confirm)
-    const since = await read($, resumingSince)
     const gpus = await read($, flavours)
-    const gpuErr = await read($, flavoursError)
+    const at = await read($, updatedAt)
+    const since = await read($, resumingSince)
     const now = await $.clock.now()
-    const isFree = (ws: Workspace) => gpus.find(f => f.name === ws.flavour)?.available
 
     return (
       <Box flexDirection="column">
         {!cfg.token && <Text color="warning">Geen API-token gevonden: zet SURF_RC_TOKEN of het keychain-item surf-research-cloud (zie README).</Text>}
         {err && <Text color="error">Fout: {err}</Text>}
-        {cfg.token && list.length === 0 && !err && <Text dimColor>Geen workspaces gevonden{cfg.filter ? ` met "${cfg.filter}" in de naam` : ''}.</Text>}
-        {gpus.length > 0 && (
-          <Box flexDirection="column" marginBottom={1}>
-            <Text bold>GPU-beschikbaarheid</Text>
-            {relevantFlavours(gpus, list).map(f => (
-              <Text key={`gpu-${f.name}`}>
-                {f.name}{'  '}
-                <Text color={f.available === true ? 'success' : f.available === false ? 'error' : 'inactive'}>{availabilityText(f)}</Text>
+        {cfg.token && list.length === 0 && !err && <Text dimColor>Geen workspace gevonden{cfg.filter ? ` met "${cfg.filter}" in de naam` : ''}.</Text>}
+        {list.map(ws => {
+          const available = isAvailable(ws, gpus)
+          const gpuText = availabilityText(ws, gpus)
+          return (
+            <Box flexDirection="column" marginBottom={1} key={ws.id}>
+              <Text>
+                <Text bold>{ws.name}</Text>{'  '}
+                <Text color={STATUS_COLOR[ws.status] ?? 'text'}>{statusText(ws.status)}</Text>
+                {ws.status === 'resuming' && since[ws.id] !== undefined && (
+                  <Text dimColor> ({minutesSince(since[ws.id] ?? now, now)} min)</Text>
+                )}
+                {gpuText && (
+                  <Text>
+                    {'  ·  '}
+                    <Text color={available ? 'success' : 'error'}>{gpuText}</Text>
+                  </Text>
+                )}
               </Text>
-            ))}
-          </Box>
-        )}
-        {gpuErr && <Text dimColor>{gpuErr}</Text>}
-        {list.map(ws => (
-          <Box flexDirection="column" marginBottom={1} key={ws.id}>
-            <Text>
-              <Text bold>{ws.name}</Text>{'  '}
-              <Text color={STATUS_COLOR[ws.status] ?? 'text'}>{ws.status}</Text>
-              {ws.status === 'resuming' && since[ws.id] !== undefined && (
-                <Text dimColor> ({minutesSince(since[ws.id] ?? now, now)} min)</Text>
+              {(ws.flavour || ws.ip) && <Text dimColor>{[ws.flavour, ws.ip].filter(Boolean).join(' · ')}</Text>}
+              {ws.lastAction?.message && (
+                <Text dimColor wrap="wrap">
+                  Laatste actie {ws.lastAction.type ?? ''} {ws.lastAction.status ?? ''}: {ws.lastAction.message}
+                </Text>
               )}
-            </Text>
-            {(ws.flavour || ws.ip) && <Text dimColor>{[ws.flavour, ws.ip].filter(Boolean).join(' · ')}</Text>}
-            {ws.lastAction?.message && (
-              <Text dimColor wrap="wrap">
-                Laatste actie {ws.lastAction.type ?? ''} {ws.lastAction.status ?? ''}: {ws.lastAction.message}
-              </Text>
-            )}
-            <Box>
-              {pending === ws.id && <Text dimColor>bezig…</Text>}
-              {pending !== ws.id && ws.status === 'paused' && isFree(ws) === false && (
-                <Text color="warning">Geen {ws.flavour} vrij. Je krijgt een melding zodra hij vrijkomt.</Text>
-              )}
-              {pending !== ws.id && ws.status === 'paused' && isFree(ws) !== false && (
-                <Button key={`resume-${ws.id}`} variant="primary" label="Starten" onPress={() => act($, ws, 'resume')} />
-              )}
-              {pending !== ws.id && ws.status === 'running' && asking !== ws.id && (
-                <Button key={`ask-${ws.id}`} label="Stoppen" onPress={() => update($, confirm, () => ws.id)} />
-              )}
-              {pending !== ws.id && ws.status === 'running' && asking === ws.id && (
-                <Box>
-                  <Text color="warning">Pauzeren? </Text>
-                  <Button key={`pause-${ws.id}`} label="Ja, pauzeer" onPress={() => act($, ws, 'pause')} />
-                  <Button key={`cancel-${ws.id}`} label="Nee" onPress={() => update($, confirm, () => null)} />
-                </Box>
-              )}
+              <Box>
+                {pending === ws.id && <Text dimColor>bezig…</Text>}
+                {pending !== ws.id && ws.status === 'paused' && available === false && (
+                  <Text dimColor>Je krijgt een melding zodra ze vrijkomen.</Text>
+                )}
+                {pending !== ws.id && ws.status === 'paused' && available !== false && (
+                  <Button key={`resume-${ws.id}`} variant="primary" label="Starten" onPress={() => act($, ws, 'resume')} />
+                )}
+                {pending !== ws.id && ws.status === 'running' && asking !== ws.id && (
+                  <Button key={`ask-${ws.id}`} label="Stoppen" onPress={() => update($, confirm, () => ws.id)} />
+                )}
+                {pending !== ws.id && ws.status === 'running' && asking === ws.id && (
+                  <Box>
+                    <Text color="warning">Stoppen? </Text>
+                    <Button key={`pause-${ws.id}`} label="Ja, stop" onPress={() => act($, ws, 'pause')} />
+                    <Button key={`cancel-${ws.id}`} label="Nee" onPress={() => update($, confirm, () => null)} />
+                  </Box>
+                )}
+              </Box>
             </Box>
-          </Box>
-        ))}
+          )
+        })}
         <Box>
           <Button key="refresh" label="Vernieuwen" hotkey="r" onPress={() => refresh($)} />
           <Text dimColor>

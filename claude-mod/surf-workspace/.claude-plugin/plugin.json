@@ -1,6 +1,6 @@
 {
   "name": "surf-workspace",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "SURF Research Cloud workspace status in Claude Code: status line, pane with start/stop, GPU availability, toast when a resume fails or GPUs come free",
   "author": {
     "name": "Mark Heeling"

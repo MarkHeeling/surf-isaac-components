@@ -6,8 +6,7 @@ export type Workspace = {
   ip?: string
   /** Size flavour, e.g. "A10 - 2 GPU". */
   flavour?: string
-  /** An error-like text on the workspace itself, if the API gives one. */
-  message?: string
+  /** The newest action; `message` is SURF's error text (`result.error`) when it has one. */
   lastAction?: { type?: string; status?: string; message?: string }
 }
 
@@ -28,14 +27,12 @@ declare module 'claude-code' {
       updatedAt: number | null
       /** Workspace id with an action in flight. */
       busy: string | null
-      /** Workspace id waiting for the pause confirmation. */
+      /** Workspace id waiting for the stop confirmation. */
       confirm: string | null
       /** Epoch ms per workspace id since it was first seen resuming. */
       resumingSince: Record<string, number>
       /** GPU flavours of the catalog item with their availability. */
       flavours: GpuFlavour[]
-      /** Why the availability check failed, if it did. */
-      flavoursError: string | null
     }
   }
 }

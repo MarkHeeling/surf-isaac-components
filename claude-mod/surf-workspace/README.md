@@ -1,23 +1,19 @@
 # surf-workspace: SURF Research Cloud status in Claude Code
 
-A Claude Code mod (a plugin of function hooks) that shows your SURF Research Cloud
-workspaces inside Claude Code and lets you start/stop them, so a resume that cannot get
-its GPUs shows up quickly instead of after the portal's ~10-minute timeout.
+A Claude Code mod (a plugin of function hooks) that answers one question, whether your SURF
+Research Cloud workspace can start right now, and lets you start and stop it.
 
-- **Status line** under the prompt: `SURF: markisaacsim paused · A10 - 2 GPU bezet`.
-- **`/surf status`** prints that status once, without opening the pane or touching the workspace.
-- **`/surf`** opens a pane per workspace: status, size flavour (e.g. `A10 - 2 GPU`), IP,
-  the last action's error text, and **Starten** (resume) / **Stoppen** (pause, with a
-  confirm step). `r` refreshes.
-- **Polling:** every `poll_seconds` (60 s) while idle, every 10 s while a workspace is
-  `resuming`/`pausing`/….
-- **GPU availability** per flavour (`A10 - 2 GPU vrij/bezet`) in the status line and pane, read
-  the way the portal's create dialog does: nothing is created. A toast when a flavour comes
-  free again. While your workspace's flavour is taken, **Starten** is hidden (and a resume is
-  refused) so you don't sit through the portal's timeout; wait for the toast instead.
-- **Toasts** (and a macOS notification) when a resume reaches `running`, when it falls back
-  to `paused`/`failed` (with SURF's error text if the API gives one), and when it is still
-  `resuming` after `resume_warn_minutes` (4 min): the usual sign that no GPUs are free.
+- **Status line** under the prompt: `SURF: markisaacsim gestopt · GPU's niet beschikbaar`
+  (or `GPU's beschikbaar`, or `markisaacsim draait`).
+- **`/surf status`** prints that line once, without opening the pane or touching the workspace.
+- **`/surf`** opens a pane with the same status, the size flavour (e.g. `A10 - 2 GPU`), IP,
+  the last action's error text, and **Starten** / **Stoppen** (stop asks once more). While
+  the GPUs are taken there is no Starten button: a start would only end in the portal's
+  ~10-minute timeout. `r` refreshes.
+- **Toasts** (and a macOS notification) when your GPUs come free again, when a start or stop
+  has worked, when a start fails (with SURF's error text, e.g. `Timeout waiting for VM to
+  resume.`), and when it is still starting after `resume_warn_minutes` (4 min).
+- Checks every `poll_seconds` (60 s), every 10 s while the workspace is starting or stopping.
 
 ## Where the availability comes from
 
@@ -35,9 +31,9 @@ reads that (retrying without `/v1` if the gateway answers 404) on every poll. It
 create dialog's check; that a resume of a paused workspace needs the same free capacity is an
 assumption, so the failed-resume toast stays as a backstop.
 
-The error fields of a failed action are not documented either; the mod looks for
-`error`/`message`/`reason`/`detail` on the workspace and its newest action. To see the raw
-answer once:
+A failed start shows up in the workspace's `workspace_actions` (the newest one has
+`status: "failed"`) with SURF's text in `result.error`; the workspace itself falls back to
+`paused`. To see the raw answer once:
 
 ```bash
 curl -s 'https://gw.live.surfresearchcloud.nl/v1/workspace/workspaces/?application_type=Compute&deleted=false&by_owner=true' \
@@ -83,7 +79,7 @@ including the desktop app's Code tab.
 | `api_token` | – | see above |
 | `workspace` | `""` | only show workspaces whose name contains this text |
 | `poll_seconds` | `60` | poll interval while nothing is changing (min 15) |
-| `resume_warn_minutes` | `4` | toast when still `resuming` after this long; `0` turns it off |
+| `resume_warn_minutes` | `4` | toast when still starting after this long; `0` turns it off |
 | `notify_macos` | `true` | also raise a macOS notification |
 | `catalog_item` | Isaac catalog item | catalog item whose offerings carry the availability; empty turns the check off |
 | `co_id` | Mark's collaboration | the `co=` value of the offerings request |
@@ -98,5 +94,5 @@ claude plugin test claude-mod/surf-workspace
 
 `hooks/surf.ts` holds the API URLs, parsing and transition rules; `hooks/register.tsx` the
 hooks (session start, `/surf`, the pane); `tests/surf.test.ts` covers parsing, the
-transitions, the token lookup, the resume → paused toast and the availability check
-(fixture trimmed from a real offerings answer).
+transitions, the token lookup, the failed-start toast and the availability check
+(fixtures shaped like the live answers of 2026-10-07).

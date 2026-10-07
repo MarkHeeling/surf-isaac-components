@@ -2,19 +2,34 @@ import { describe, expect, mock, test } from 'claude-code/testing'
 
 import { describeAvailabilityChange, describeChange, isSlowResume, parseAvailability, parseList, statusLine } from '../hooks/surf'
 
+// Shaped like the live answer (2026-10-07): `actions` only lists allowed
+// action names, the history is in `workspace_actions` with the error text in
+// `result.error`.
+const workspace = (status: string, actions: unknown[] = []) => ({
+  id: 'ws-1',
+  name: 'markisaacsim',
+  status,
+  active: status === 'running',
+  actions: ['resume', 'update_nsgs', 'update_storages'],
+  workspace_actions: actions,
+  resource_meta: { ip: '145.38.0.1' },
+  meta: {
+    host_name: 'markisaacsim',
+    flavours: [{ name: 'Ubuntu 22.04', category: 'os' }, { name: 'A10 - 2 GPU', category: 'size' }],
+  },
+})
+
+const FAILED_RESUME = {
+  type: 'resume',
+  status: 'failed',
+  reason: 'API',
+  result: { error: 'Timeout waiting for VM to resume.' },
+  time_created: '2026-10-07T13:03:00Z',
+}
+
 const LIST = JSON.stringify({
   count: 2,
-  results: [
-    {
-      id: 'ws-1',
-      name: 'markisaacsim',
-      status: 'paused',
-      active: false,
-      resource_meta: { ip: '145.38.0.1' },
-      meta: { flavours: [{ name: 'Ubuntu 22.04', category: 'os' }, { name: 'A10 - 2 GPU', category: 'size' }] },
-    },
-    { id: 'ws-2', name: 'other-box', status: 'running', active: true, resource_meta: {} },
-  ],
+  results: [workspace('paused'), { id: 'ws-2', name: 'other-box', status: 'running', active: true, resource_meta: {} }],
 })
 
 // Trimmed from a real offerings answer (2026-10-07): one `available` flag per flavour.
@@ -45,43 +60,24 @@ const PANE_PROPS = {
 
 describe('parsing', () => {
   test('keeps the filtered workspaces with status, ip and size flavour', () => {
-    const list = parseList(LIST, 'isaac')
-    expect(list).toEqual([
-      {
-        id: 'ws-1',
-        name: 'markisaacsim',
-        status: 'paused',
-        ip: '145.38.0.1',
-        flavour: 'A10 - 2 GPU',
-        message: undefined,
-        lastAction: undefined,
-      },
+    expect(parseList(LIST, 'isaac')).toEqual([
+      { id: 'ws-1', name: 'markisaacsim', status: 'paused', ip: '145.38.0.1', flavour: 'A10 - 2 GPU', lastAction: undefined },
     ])
     expect(parseList(LIST, '').length).toBe(2)
   })
 
-  test('picks the newest action and its error text', () => {
-    const list = parseList(
-      JSON.stringify({
-        results: [
-          {
-            id: 'ws-1',
-            name: 'markisaacsim',
-            status: 'paused',
-            actions: [
-              { type: 'pause', status: 'done', time_created: '2026-10-06T10:00:00Z' },
-              { type: 'resume', status: 'failed', time_created: '2026-10-07T10:00:00Z', error: { message: 'No valid host was found' } },
-            ],
-          },
-        ],
-      }),
-      '',
-    )
-    expect(list[0]?.lastAction).toEqual({ type: 'resume', status: 'failed', message: 'No valid host was found' })
+  test('a failed newest action gives SURF\'s error text, not the reason field', () => {
+    const done = { type: 'pause', status: 'done', reason: 'API', result: {}, time_created: '2026-10-01T10:00:00Z' }
+    const list = parseList(JSON.stringify({ results: [workspace('paused', [FAILED_RESUME, done])] }), '')
+    expect(list[0]?.lastAction).toEqual({ type: 'resume', status: 'failed', message: 'Timeout waiting for VM to resume.' })
+    const ok = parseList(JSON.stringify({ results: [workspace('paused', [{ ...FAILED_RESUME, time_created: '2026-10-01T00:00:00Z' }, done])] }), '')
+    expect(ok[0]?.lastAction).toEqual({ type: 'pause', status: 'done', message: undefined })
   })
 })
 
 describe('availability', () => {
+  const ws = [{ id: 'ws-1', name: 'markisaacsim', status: 'paused', flavour: 'A10 - 2 GPU' }]
+
   test('reads the size flavours and their available flag', () => {
     expect(parseAvailability(offerings(false, true))).toEqual([
       { name: 'A10 - 1 GPU', available: false },
@@ -89,35 +85,35 @@ describe('availability', () => {
     ])
   })
 
-  test('says when a flavour comes free or runs out', () => {
-    const before = parseAvailability(offerings(false, false))
-    expect(describeAvailabilityChange(before, parseAvailability(offerings(false, true)))).toEqual(['A10 - 2 GPU is weer beschikbaar.'])
-    expect(describeAvailabilityChange(parseAvailability(offerings(true, true)), before)).toHaveLength(2)
-    expect(describeAvailabilityChange([], before)).toEqual([])
+  test('the status line says whether the workspace\'s GPUs are available', () => {
+    expect(statusLine(ws, null, parseAvailability(offerings(true, false)))).toBe("SURF: markisaacsim gestopt · GPU's niet beschikbaar")
+    expect(statusLine(ws, null, parseAvailability(offerings(false, true)))).toBe("SURF: markisaacsim gestopt · GPU's beschikbaar")
+    expect(statusLine([{ ...ws[0]!, status: 'running' }], null, parseAvailability(offerings(false, false)))).toBe('SURF: markisaacsim draait')
+    expect(statusLine(ws, null, [])).toBe('SURF: markisaacsim gestopt')
+    expect(statusLine([], 'token geweigerd')).toBe('SURF: token geweigerd')
   })
 
-  test('the status line shows the flavour the workspace uses', () => {
-    const ws = [{ id: 'ws-1', name: 'markisaacsim', status: 'paused', flavour: 'A10 - 2 GPU' }]
-    expect(statusLine(ws, null, parseAvailability(offerings(true, false)))).toBe('SURF: markisaacsim paused · A10 - 2 GPU bezet')
+  test('a toast only when the workspace\'s own GPUs come free', () => {
+    const taken = parseAvailability(offerings(false, false))
+    expect(describeAvailabilityChange(taken, parseAvailability(offerings(false, true)), ws)).toEqual([
+      "markisaacsim: GPU's weer beschikbaar, je kunt starten.",
+    ])
+    expect(describeAvailabilityChange(taken, parseAvailability(offerings(true, false)), ws)).toEqual([])
+    expect(describeAvailabilityChange([], parseAvailability(offerings(true, true)), ws)).toEqual([])
   })
 })
 
 describe('transitions', () => {
   const ws = { id: 'ws-1', name: 'markisaacsim' }
 
-  test('a resume that falls back to paused is a failed resume', () => {
-    const change = describeChange({ ...ws, status: 'resuming' }, { ...ws, status: 'paused' })
-    expect(change.isResumeFailed).toBe(true)
-    expect(change.say).toContain('GPU')
+  test('a resume that falls back to paused is a failed start, with SURF\'s reason', () => {
+    const say = describeChange({ ...ws, status: 'resuming' }, { ...ws, status: 'paused', lastAction: { type: 'resume', status: 'failed', message: 'Timeout waiting for VM to resume.' } })
+    expect(say).toBe("markisaacsim: starten mislukt (Timeout waiting for VM to resume.). Waarschijnlijk geen GPU's vrij.")
   })
 
-  test('a resume that reaches running says so', () => {
-    expect(describeChange({ ...ws, status: 'resuming' }, { ...ws, status: 'running' }).say).toBe('markisaacsim draait weer.')
-  })
-
-  test('no change, nothing to say', () => {
-    expect(describeChange({ ...ws, status: 'running' }, { ...ws, status: 'running' })).toEqual({})
-    expect(describeChange(undefined, { ...ws, status: 'running' })).toEqual({})
+  test('start and stop that work say so', () => {
+    expect(describeChange({ ...ws, status: 'resuming' }, { ...ws, status: 'running' })).toBe('markisaacsim draait weer.')
+    expect(describeChange({ ...ws, status: 'pausing' }, { ...ws, status: 'paused' })).toBe('markisaacsim is gestopt.')
   })
 
   test('slow resume after the threshold', () => {
@@ -126,9 +122,9 @@ describe('transitions', () => {
     expect(isSlowResume(undefined, 10 * 60_000, 4)).toBe(false)
   })
 
-  test('status line', () => {
-    expect(statusLine([{ ...ws, status: 'paused' }], null)).toBe('SURF: markisaacsim paused')
-    expect(statusLine([], 'token geweigerd')).toBe('SURF: token geweigerd')
+  test('no change, nothing to say', () => {
+    expect(describeChange({ ...ws, status: 'running' }, { ...ws, status: 'running' })).toBeUndefined()
+    expect(describeChange(undefined, { ...ws, status: 'running' })).toBeUndefined()
   })
 })
 
@@ -152,7 +148,7 @@ test('session start fetches with the token and pins the status line', { options:
 
   expect(seen[0]?.url).toContain('/v1/workspace/workspaces/')
   expect(seen[0]?.auth).toBe('secret-token')
-  expect(statuses).toContain('SURF: markisaacsim paused · other-box running')
+  expect(statuses).toContain('SURF: markisaacsim gestopt | other-box draait')
 })
 
 test('pressing Starten resumes, and a fall back to paused raises the GPU toast', { options: { api_token: 'secret-token', notify_macos: false } }, async ($, on) => {
@@ -173,7 +169,7 @@ test('pressing Starten resumes, and a fall back to paused raises the GPU toast',
       status = 'resuming'
       return { value: { status: 202, ok: true, headers: {}, text: '{}' } }
     }
-    const body = { results: [{ id: 'ws-1', name: 'markisaacsim', status, actions: status === 'paused' && posts.length ? [{ type: 'resume', status: 'failed', error: 'No valid host was found' }] : [] }] }
+    const body = { results: [workspace(status, status === 'paused' && posts.length ? [FAILED_RESUME] : [])] }
     return { value: { status: 200, ok: true, headers: {}, text: JSON.stringify(body) } }
   })
 
@@ -205,7 +201,7 @@ test('pressing Starten resumes, and a fall back to paused raises the GPU toast',
   // SURF gives up: the next fast poll sees the workspace back on paused.
   status = 'paused'
   await clock.advance(10_000)
-  expect(toasts.some(t => t.includes("geen GPU's vrij") && t.includes('No valid host was found'))).toBe(true)
+  expect(toasts.some(t => t.includes('starten mislukt') && t.includes('Timeout waiting for VM to resume.'))).toBe(true)
   await ui.unmount()
 })
 
@@ -258,15 +254,15 @@ test('availability is polled and a flavour coming free raises a toast', { option
 
   const offeringsUrl = urls.find(u => u.includes('/offerings/') && !u.includes('/v1/'))
   expect(offeringsUrl).toContain('/application-market/catalog_items/ca0f2d7e-9bcb-4e8c-b902-e4b656dc180e/offerings/?co=9e2da160-b184-4c14-8157-2256df95f9ef&product=daphne-compute')
-  expect(statuses).toContain('SURF: markisaacsim paused · other-box running · A10 - 2 GPU bezet')
+  expect(statuses).toContain("SURF: markisaacsim gestopt · GPU's niet beschikbaar | other-box draait")
 
   free = true
   await clock.advance(60_000)
-  expect(toasts).toContain('A10 - 2 GPU is weer beschikbaar.')
-  expect(statuses).toContain('SURF: markisaacsim paused · other-box running · A10 - 2 GPU vrij')
+  expect(toasts).toContain("markisaacsim: GPU's weer beschikbaar, je kunt starten.")
+  expect(statuses).toContain("SURF: markisaacsim gestopt · GPU's beschikbaar | other-box draait")
 })
 
-test('while the flavour is taken there is no Starten button, only the wait note', { options: { api_token: 'secret-token', notify_macos: false } }, async ($, on) => {
+test('while the GPUs are taken there is no Starten button, only the wait note', { options: { api_token: 'secret-token', notify_macos: false } }, async ($, on) => {
   const clock = mock.clock(on, { now: 1_000_000 })
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
@@ -285,7 +281,7 @@ test('while the flavour is taken there is no Starten button, only the wait note'
   for (const surface of ['terminal', 'desktop'] as const) {
     const ui = await $.ui.mount({ plugin: 'surf-workspace', surface, component: 'Pane', requestId: 'surf-workspace', props: PANE_PROPS })
     expect(await ui.find({ key: 'resume-ws-1' })).toBeUndefined()
-    expect(await ui.find({ type: 'Text', text: /Geen A10 - 2 GPU vrij/ })).toBeDefined()
+    expect(await ui.find({ type: 'Text', text: /melding zodra ze vrijkomen/ })).toBeDefined()
     await ui.unmount()
   }
   expect(posts).toEqual([])
