@@ -140,3 +140,9 @@ For more information, see [Livestream Clients](https://docs.omniverse.nvidia.com
 > **Not built yet** — planned component.
 
 Isaac Sim/Lab loads its 3D assets (robots, environments, materials) from the cloud through Omniverse by default. In the minimal container the cache service (OmniHub) does not start, so every run fetches the assets again: slower loading and log noise. The Omniverse asset cache component will provide a local cache of the assets on persistent storage, so that Isaac Sim/Lab can load them from disk instead of the cloud.
+
+---
+
+## Claude Code mod: workspace status
+
+[`claude-mod/surf-workspace`](claude-mod/surf-workspace/README.md) shows your workspaces' status in Claude Code (status line + `/surf` pane), starts/stops them, and raises a toast as soon as a resume stalls or falls back to `paused` (usually: no GPUs free), instead of waiting for the portal's timeout.

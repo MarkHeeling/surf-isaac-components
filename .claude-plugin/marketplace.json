@@ -1,0 +1,5 @@
+{
+  "name": "surf-isaac-components",
+  "owner": { "name": "Mark Heeling" },
+  "plugins": [{ "name": "surf-workspace", "source": "./claude-mod/surf-workspace" }]
+}

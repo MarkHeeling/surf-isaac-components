@@ -1,0 +1,42 @@
+{
+  "name": "surf-workspace",
+  "version": "0.1.0",
+  "description": "SURF Research Cloud workspace status in Claude Code: status line, pane with start/stop, toast when a resume fails",
+  "author": {
+    "name": "Mark Heeling"
+  },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "api_token": {
+      "type": "string",
+      "title": "SURF Research Cloud API token",
+      "description": "Personal API token from portal.live.surfresearchcloud.nl > Profile > API tokens. Empty: SURF_RC_TOKEN or the macOS keychain item surf-research-cloud",
+      "sensitive": true,
+      "required": false
+    },
+    "workspace": {
+      "type": "string",
+      "title": "Workspace name filter",
+      "description": "Only show workspaces whose name contains this text; empty shows all your Compute workspaces",
+      "default": ""
+    },
+    "poll_seconds": {
+      "type": "number",
+      "title": "Poll interval while idle (s)",
+      "description": "How often to check while nothing is changing; during resume/pause it checks every 10 s",
+      "default": 60
+    },
+    "resume_warn_minutes": {
+      "type": "number",
+      "title": "Warn after resuming for (min)",
+      "description": "Toast when a workspace is still resuming after this many minutes (often: no GPUs free)",
+      "default": 4
+    },
+    "notify_macos": {
+      "type": "boolean",
+      "title": "macOS notification",
+      "description": "Also raise a macOS notification when a resume succeeds or fails",
+      "default": true
+    }
+  }
+}
