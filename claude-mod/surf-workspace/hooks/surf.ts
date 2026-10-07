@@ -4,21 +4,27 @@
 // API: https://servicedesk.surf.nl/wiki/spaces/WIKI/pages/174981256 (first
 // steps) and the Swagger page at https://gw.live.surfresearchcloud.nl/v1/workspace/swagger/docs/.
 // Auth is the bare token in an `authorization` header. Start/stop in the
-// portal are the `resume`/`pause` actions.
+// portal are the `resume`/`pause` actions. Field names below were checked
+// against the live API on 2026-10-07.
 
 import type { GpuFlavour, Workspace } from '../types'
 
 export const WORKSPACE_API = 'https://gw.live.surfresearchcloud.nl/v1/workspace'
-export const PORTAL = 'https://portal.live.surfresearchcloud.nl/'
 
 /** Statuses during which the workspace is on its way somewhere: poll fast. */
 const TRANSITIONING = new Set(['creating', 'resuming', 'pausing', 'updating', 'rebooting', 'deleting'])
-/** Statuses a resume can fall back to when it did not get its hardware. */
-const RESUME_FAILED = new Set(['paused', 'failed', 'unhealthy', 'unknown'])
+
+const STATUS_TEXT: Record<string, string> = {
+  running: 'draait',
+  paused: 'gestopt',
+  resuming: 'start op',
+  pausing: 'stopt',
+}
 
 export const FAST_POLL_MS = 10_000
 
 export function listUrl(): string {
+  // Without these filters the list holds every workspace of the CO, deleted ones included.
   return `${WORKSPACE_API}/workspaces/?application_type=Compute&deleted=false&by_owner=true&limit=100`
 }
 
@@ -34,6 +40,10 @@ export function isTransitioning(status: string): boolean {
   return TRANSITIONING.has(status)
 }
 
+export function statusText(status: string): string {
+  return STATUS_TEXT[status] ?? status
+}
+
 type Raw = Record<string, unknown>
 
 const asObject = (value: unknown): Raw | undefined =>
@@ -42,22 +52,6 @@ const asObject = (value: unknown): Raw | undefined =>
 const asString = (value: unknown): string | undefined =>
   typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined
 
-/**
- * The first error-like text on an object: the API's exact field names for a
- * failed action are not documented, so look for the usual suspects.
- */
-export function findMessage(value: unknown): string | undefined {
-  const obj = asObject(value)
-  if (!obj) return undefined
-  for (const key of ['error', 'error_message', 'message', 'status_message', 'reason', 'detail']) {
-    const text = asString(obj[key])
-    if (text) return text
-    const nested = findMessage(obj[key])
-    if (nested) return nested
-  }
-  return undefined
-}
-
 function sizeFlavour(raw: Raw): string | undefined {
   const flavours = asObject(raw.meta)?.flavours
   if (!Array.isArray(flavours)) return undefined
@@ -65,20 +59,27 @@ function sizeFlavour(raw: Raw): string | undefined {
   return asString(size?.name)
 }
 
-function lastAction(raw: Raw): Workspace['lastAction'] {
-  const actions = raw.actions
-  if (!Array.isArray(actions) || actions.length === 0) return undefined
-  const sorted = actions
+/**
+ * SURF's error text when the newest action failed. The history is in
+ * `workspace_actions` (`actions` is only the list of allowed action names);
+ * the text is in `result.error`, while `reason` says who started it ("API").
+ */
+function lastFailure(raw: Raw): string | undefined {
+  const actions = raw.workspace_actions
+  if (!Array.isArray(actions)) return undefined
+  const last = actions
     .map(asObject)
     .filter((a): a is Raw => a !== undefined)
     .sort((a, b) => String(a.time_created ?? '').localeCompare(String(b.time_created ?? '')))
-  const last = sorted[sorted.length - 1]
-  if (!last) return undefined
-  return {
-    type: asString(last.type) ?? asString(last.action) ?? asString(last.name),
-    status: asString(last.status)?.toLowerCase(),
-    message: findMessage(last),
-  }
+    .at(-1)
+  if (asString(last?.status)?.toLowerCase() !== 'failed') return undefined
+  const result = asObject(last?.result)
+  return asString(result?.error) ?? asString(result?.message) ?? 'onbekende fout'
+}
+
+/** The portal name is long; the host name ("markisaacsim") is what people call it. */
+function names(raw: Raw): string[] {
+  return [asString(asObject(raw.meta)?.host_name), asString(raw.name)].filter((n): n is string => n !== undefined)
 }
 
 export function parseWorkspace(value: unknown): Workspace | undefined {
@@ -87,61 +88,50 @@ export function parseWorkspace(value: unknown): Workspace | undefined {
   if (!raw || !id) return undefined
   return {
     id,
-    name: asString(raw.name) ?? id,
+    name: names(raw)[0] ?? id,
     status: (asString(raw.status) ?? (raw.active === true ? 'running' : 'unknown')).toLowerCase(),
-    ip: asString(asObject(raw.resource_meta)?.ip),
     flavour: sizeFlavour(raw),
-    message: findMessage(raw),
-    lastAction: lastAction(raw),
+    failure: lastFailure(raw),
   }
 }
 
-/** Parses a (paginated) list answer and keeps the names matching `filter`. */
+/** Parses a (paginated) list answer and keeps those whose host or portal name contains `filter`. */
 export function parseList(text: string, filter: string): Workspace[] {
   const body: unknown = JSON.parse(text)
   const results = Array.isArray(body) ? body : asObject(body)?.results
   if (!Array.isArray(results)) throw new Error('unexpected answer: no results list')
   const needle = filter.trim().toLowerCase()
   return results
+    .map(asObject)
+    .filter((raw): raw is Raw => raw !== undefined)
+    .filter(raw => needle === '' || names(raw).some(n => n.toLowerCase().includes(needle)))
     .map(parseWorkspace)
     .filter((w): w is Workspace => w !== undefined)
-    .filter(w => needle === '' || w.name.toLowerCase().includes(needle))
     .sort((a, b) => a.name.localeCompare(b.name))
 }
 
-export type Change = {
-  /** Text for a toast (and a macOS notification), when something worth saying happened. */
-  say?: string
-  /** True when a resume ended without the workspace running. */
-  isResumeFailed?: boolean
+/** Toast text for a status change from `before` to `after`, if it is worth one. */
+export function describeChange(before: Workspace | undefined, after: Workspace): string | undefined {
+  if (!before || before.status === after.status) return undefined
+  if (before.status === 'resuming' && after.status === 'running') return `${after.name} draait weer.`
+  if (before.status === 'resuming') {
+    return `${after.name}: starten mislukt${after.failure ? ` (${after.failure})` : ''}. Waarschijnlijk geen GPU's vrij.`
+  }
+  if (before.status === 'pausing' && after.status === 'paused') return `${after.name} is gestopt.`
+  return undefined
 }
 
-/** What a status change from `before` to `after` means for the person. */
-export function describeChange(before: Workspace | undefined, after: Workspace): Change {
-  if (!before || before.status === after.status) return {}
-  const name = after.name
-  if (before.status === 'resuming' && after.status === 'running') {
-    return { say: `${name} draait weer.` }
-  }
-  if (before.status === 'resuming' && RESUME_FAILED.has(after.status)) {
-    const why = after.lastAction?.message ?? after.message
-    return {
-      say: `${name}: starten mislukt (${after.status})${why ? `: ${why}` : ''}. Waarschijnlijk geen GPU's vrij.`,
-      isResumeFailed: true,
-    }
-  }
-  if (before.status === 'pausing' && after.status === 'paused') {
-    return { say: `${name} is gepauzeerd.` }
-  }
-  if (after.status === 'failed' || after.status === 'unhealthy') {
-    return { say: `${name} staat op ${after.status}.` }
-  }
-  return {}
+/** Whether the GPUs this workspace needs are free: true, false, or undefined when unknown. */
+export function isAvailable(ws: Workspace, flavours: readonly GpuFlavour[]): boolean | undefined {
+  const available = flavours.find(f => f.name === ws.flavour)?.available
+  return typeof available === 'boolean' ? available : undefined
 }
 
-/** True once a resume has run longer than `warnMinutes`. */
-export function isSlowResume(resumingSince: number | undefined, now: number, warnMinutes: number): boolean {
-  return resumingSince !== undefined && warnMinutes > 0 && now - resumingSince >= warnMinutes * 60_000
+/** "GPU's beschikbaar" / "GPU's niet beschikbaar"; nothing while it runs or when unknown. */
+export function availabilityText(ws: Workspace, flavours: readonly GpuFlavour[]): string | undefined {
+  if (ws.status === 'running') return undefined
+  const available = isAvailable(ws, flavours)
+  return available === undefined ? undefined : available ? "GPU's beschikbaar" : "GPU's niet beschikbaar"
 }
 
 /** The one-line status under the prompt. */
@@ -151,14 +141,9 @@ export function statusLine(
   flavours: readonly GpuFlavour[] = [],
 ): string {
   if (error) return `SURF: ${error}`
-  const parts = workspaces.map(w => `${w.name} ${w.status}`)
-  if (parts.length === 0) parts.push('geen workspace gevonden')
-  for (const f of relevantFlavours(flavours, workspaces)) parts.push(`${f.name} ${availabilityText(f)}`)
-  return 'SURF: ' + parts.join(' · ')
-}
-
-export function minutesSince(since: number, now: number): number {
-  return Math.floor((now - since) / 60_000)
+  if (workspaces.length === 0) return 'SURF: geen workspace gevonden'
+  const parts = workspaces.map(w => [`${w.name} ${statusText(w.status)}`, availabilityText(w, flavours)].filter(Boolean).join(' · '))
+  return 'SURF: ' + parts.join(' | ')
 }
 
 // GPU availability: the portal's create dialog reads it from the catalog
@@ -191,25 +176,13 @@ export function parseAvailability(text: string): GpuFlavour[] {
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name))
 }
 
-/** The flavours that matter: the ones the workspaces use, else all of them. */
-export function relevantFlavours(flavours: readonly GpuFlavour[], workspaces: readonly Workspace[]): GpuFlavour[] {
-  const used = new Set(workspaces.map(w => w.flavour).filter(Boolean))
-  const mine = flavours.filter(f => used.has(f.name))
-  return mine.length > 0 ? mine : [...flavours]
-}
-
-export function availabilityText(flavour: GpuFlavour): string {
-  return flavour.available === true ? 'vrij' : flavour.available === false ? 'bezet' : 'onbekend'
-}
-
-/** Toasts for flavours that came free or ran out since the last check. */
-export function describeAvailabilityChange(before: readonly GpuFlavour[], after: readonly GpuFlavour[]): string[] {
-  const old = new Map(before.map(f => [f.name, f.available]))
-  const said: string[] = []
-  for (const f of after) {
-    const was = old.get(f.name)
-    if (was === false && f.available === true) said.push(`${f.name} is weer beschikbaar.`)
-    if (was === true && f.available === false) said.push(`${f.name} is niet meer beschikbaar.`)
-  }
-  return said
+/** Toasts for the workspaces whose GPUs came free since the last check. */
+export function describeAvailabilityChange(
+  before: readonly GpuFlavour[],
+  after: readonly GpuFlavour[],
+  workspaces: readonly Workspace[],
+): string[] {
+  return workspaces
+    .filter(w => w.status !== 'running' && isAvailable(w, before) === false && isAvailable(w, after) === true)
+    .map(w => `${w.name}: GPU's weer beschikbaar, je kunt starten.`)
 }

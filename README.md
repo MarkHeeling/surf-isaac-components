@@ -145,4 +145,4 @@ Isaac Sim/Lab loads its 3D assets (robots, environments, materials) from the clo
 
 ## Claude Code mod: workspace status
 
-[`claude-mod/surf-workspace`](claude-mod/surf-workspace/README.md) shows your workspaces' status in Claude Code (status line + `/surf` pane), starts/stops them, and raises a toast as soon as a resume stalls or falls back to `paused` (usually: no GPUs free), instead of waiting for the portal's timeout.
+[`claude-mod/surf-workspace`](claude-mod/surf-workspace/README.md) shows in Claude Code (status line + `/surf` pane) whether your workspace's GPUs are available, starts and stops it, and raises a toast when the GPUs come free or a start fails.
