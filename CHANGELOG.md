@@ -4,6 +4,17 @@ Notable changes to the `nvidia-isaac-sim-lab-arena` SURF Research Cloud componen
 Images are pinned by digest, so a "version" is the pinned image plus this history.
 Dates are when the change landed in the repo.
 
+## 2026-10-29 — image_sim "latest", check on isaac_data_root
+
+- `image_sim` / `image_lab` set to `latest` now mean the same as empty (use
+  `isaac_*_version`), instead of trying to pull an image called `latest`.
+- The chosen image now goes into its own facts instead of overwriting `image_sim` /
+  `image_lab`. SURF passes catalog parameters as extra vars, which `set_fact` cannot
+  override, so with the previous version an empty `image_sim` from the catalog item
+  would have been pulled as an empty image name.
+- The playbook stops with a clear message when `isaac_data_root` is not an absolute
+  path or still holds a placeholder such as `/data/<volume-name>`.
+
 ## 2026-10-29 — Newest Isaac version by default, WireGuard on by default
 
 - **Newest version from NGC.** New `isaac_sim_version` / `isaac_lab_version` (default

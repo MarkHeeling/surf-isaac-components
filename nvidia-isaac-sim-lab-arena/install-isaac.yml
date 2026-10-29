@@ -37,8 +37,8 @@
     # would fall back to the 2.x line on Isaac Sim 5. Turn it off once 3.0 is GA.
     isaac_sim_prerelease: false
     isaac_lab_prerelease: true
-    image_sim: ""   # optional full image reference; wins over isaac_sim_version
-    image_lab: ""   # optional full image reference; wins over isaac_lab_version
+    image_sim: ""   # optional full image reference; wins over isaac_sim_version ("" or "latest" = use the version)
+    image_lab: ""   # optional full image reference; wins over isaac_lab_version ("" or "latest" = use the version)
     # full-isaac: the "everything" image (full Isaac Sim editor + Isaac Lab + Arena).
     # Default = build from source on the workstation at provisioning (build-on-deploy,
     # ~15 min) so the catalog item is shareable without a registry. Optionally set
@@ -294,6 +294,11 @@
       ansible.builtin.set_fact:
         isaac_option: "{{ isaac_option | replace('_', '-') }}"
 
+    - name: Fail clearly on a placeholder isaac_data_root
+      ansible.builtin.fail:
+        msg: "isaac_data_root='{{ isaac_data_root }}' is not a real path. Use the volume's mount path, e.g. /data/isaac-data."
+      when: ('<' in isaac_data_root) or ('>' in isaac_data_root) or not isaac_data_root.startswith('/')
+
     - name: Fail clearly on an unknown isaac_option
       ansible.builtin.fail:
         msg: "isaac_option='{{ isaac_option }}' is invalid. Use one of: full-isaac, lab, sim, arena."
@@ -337,7 +342,14 @@
         - image_full | length == 0
 
     # "latest" -> the newest version tag on NGC (files/ngc_latest_tag.py), a version ->
-    # that tag. An explicit image_sim / image_lab skips this.
+    # that tag. An explicit image_sim / image_lab skips this; "latest" there counts as
+    # empty. The result goes into new facts (sim_image_ref / lab_image_ref) because
+    # SURF passes catalog parameters as extra vars, which set_fact cannot override.
+    - name: Explicit image references ("" or "latest" = use the version)
+      ansible.builtin.set_fact:
+        sim_image_ref: "{{ '' if (image_sim | default('') | trim) in ['', 'latest'] else image_sim | trim }}"
+        lab_image_ref: "{{ '' if (image_lab | default('') | trim) in ['', 'latest'] else image_lab | trim }}"
+
     - name: Find the newest {{ isaac_option }} version on NGC
       ansible.builtin.script: >-
         files/ngc_latest_tag.py nvidia/{{ 'isaac-sim' if isaac_option == 'sim' else 'isaac-lab' }}
@@ -349,23 +361,23 @@
       changed_when: false
       when:
         - isaac_option in ['sim', 'lab']
-        - (image_sim if isaac_option == 'sim' else image_lab) | length == 0
-        - (isaac_sim_version if isaac_option == 'sim' else isaac_lab_version) == 'latest'
+        - (sim_image_ref if isaac_option == 'sim' else lab_image_ref) | length == 0
+        - (isaac_sim_version if isaac_option == 'sim' else isaac_lab_version) | trim in ['', 'latest']
 
     - name: Image reference from the version
       ansible.builtin.set_fact:
-        image_sim: "{{ image_sim if image_sim | length > 0 else 'nvcr.io/nvidia/isaac-sim:' ~ (ngc_latest.stdout | trim if isaac_sim_version == 'latest' else isaac_sim_version) }}"
+        sim_image_ref: "{{ sim_image_ref if sim_image_ref | length > 0 else 'nvcr.io/nvidia/isaac-sim:' ~ (ngc_latest.stdout | trim if isaac_sim_version | trim in ['', 'latest'] else isaac_sim_version | trim) }}"
       when: isaac_option == 'sim'
 
     - name: Image reference from the version (lab)
       ansible.builtin.set_fact:
-        image_lab: "{{ image_lab if image_lab | length > 0 else 'nvcr.io/nvidia/isaac-lab:' ~ (ngc_latest.stdout | trim if isaac_lab_version == 'latest' else isaac_lab_version) }}"
+        lab_image_ref: "{{ lab_image_ref if lab_image_ref | length > 0 else 'nvcr.io/nvidia/isaac-lab:' ~ (ngc_latest.stdout | trim if isaac_lab_version | trim in ['', 'latest'] else isaac_lab_version | trim) }}"
       when: isaac_option == 'lab'
 
     - name: Select image
       ansible.builtin.set_fact:
         # full-isaac: a registry image_full if given, otherwise the locally built tag.
-        isaac_image: "{{ image_sim if isaac_option == 'sim' else (image_lab if isaac_option == 'lab' else (image_full if image_full | length > 0 else 'isaaclab_arena:latest')) }}"
+        isaac_image: "{{ sim_image_ref if isaac_option == 'sim' else (lab_image_ref if isaac_option == 'lab' else (image_full if image_full | length > 0 else 'isaaclab_arena:latest')) }}"
 
     - name: Set container UID and persistent directories per option
       ansible.builtin.set_fact:
