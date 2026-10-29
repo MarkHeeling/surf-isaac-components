@@ -4,6 +4,25 @@ Notable changes to the `nvidia-isaac-sim-lab-arena` SURF Research Cloud componen
 Images are pinned by digest, so a "version" is the pinned image plus this history.
 Dates are when the change landed in the repo.
 
+## 2026-10-29 — Newest Isaac version by default, WireGuard on by default
+
+- **Newest version from NGC.** New `isaac_sim_version` / `isaac_lab_version` (default
+  `latest`). With `latest` the playbook lists the image's tags on nvcr.io
+  (`files/ngc_latest_tag.py`, with the NGC key) and pulls the highest version; set a tag
+  (e.g. `6.1.0`) to stay on it. Pre-releases count only with `isaac_*_prerelease`: off
+  for Isaac Sim, on for Isaac Lab while 3.0 is a release candidate (the newest Lab
+  release is otherwise 2.x on Isaac Sim 5).
+- **`image_sim` / `image_lab` are now optional overrides** (default empty) and win over the
+  version, e.g. for a digest pin. A catalog item that still sets them keeps that image,
+  so clear them to get the newest version.
+- The pulled tag and digest still go to `/etc/isaac/image-digest`, so a deploy can be
+  frozen afterwards.
+- **`wireguard_enabled` defaults to `true`.** Without it the stream listened on
+  `127.0.0.1` only and was unreachable (seen on the first RTX 6000 workspace). Option A
+  (public ports) now needs `wireguard_enabled=false`.
+- Not validated on a workstation: NGC is not reachable from the environment that made
+  this change. Tested the version choice offline and the playbook with a syntax check.
+
 ## 2026-10-29 — RTX 6000 (Blackwell) flavour: open kernel modules
 
 - **Driver flavour: open kernel modules by default.** New `nvidia_kernel_modules` (`open` |

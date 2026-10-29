@@ -20,20 +20,25 @@
     nvidia_driver_apt_version: ""     # optional exact apt version of the metapackage (e.g. 580.95.05-1ubuntu1); empty = latest 580
 
     # --- Images ---------------------------------------------------------------
-    # Pre-built NGC images. Pin by DIGEST for a reproducible rollout:
-    #   nvcr.io/nvidia/isaac-sim@sha256:<digest>
-    # The tag form below rolls to whatever NGC serves for that tag; the digest that
-    # was actually pulled is printed by the playbook and written to
-    # /etc/isaac/image-digest, so it can be pasted back here (or resolve it from a
-    # machine with NGC access: `docker buildx imagetools inspect <image:tag>`).
-    #   Isaac Sim 6.1.0 GA (2026-09-10)          -> nvcr.io/nvidia/isaac-sim:6.1.0
-    #   Isaac Lab 3.0.0 RC1 / v3.0.0-EA (2026-09-16), built on Isaac Sim 6.1
-    #                                             -> nvcr.io/nvidia/isaac-lab:3.0.0-rc1
+    # Pre-built NGC images. By default the playbook takes the NEWEST version on NGC at
+    # provisioning ("latest" below): it lists the image's tags in the registry and picks
+    # the highest version number. Set a version to stay on it (e.g. "6.1.0"), or set
+    # image_sim / image_lab to a full image reference to pin exactly, also by digest:
+    #   image_sim: nvcr.io/nvidia/isaac-sim@sha256:<digest>
+    # The tag and digest that were actually pulled are printed by the playbook and
+    # written to /etc/isaac/image-digest, so a deploy can be frozen afterwards.
     # Previous digest pins (Isaac Sim 6.0.x / Isaac Lab 3.0.0-beta2 line):
     #   image_sim: nvcr.io/nvidia/isaac-sim@sha256:c3e7bef5b2bfdb9972807c34195206078372bf8c6cff79716be130a3fe3e9ce9
     #   image_lab: nvcr.io/nvidia/isaac-lab@sha256:970621075d00059c309f847fa835709de3fa634537407a7009c586c97893d218
-    image_sim: "nvcr.io/nvidia/isaac-sim:6.1.0"
-    image_lab: "nvcr.io/nvidia/isaac-lab:3.0.0-rc1"
+    isaac_sim_version: "latest"     # "latest" = newest release on NGC, or a tag like "6.1.0"
+    isaac_lab_version: "latest"     # "latest" = newest on NGC, or a tag like "3.0.0-rc1"
+    # Whether "latest" may pick a pre-release (-rc, -beta, -dev). Off for Isaac Sim.
+    # On for Isaac Lab as long as 3.0 is a release candidate: without it, "latest"
+    # would fall back to the 2.x line on Isaac Sim 5. Turn it off once 3.0 is GA.
+    isaac_sim_prerelease: false
+    isaac_lab_prerelease: true
+    image_sim: ""   # optional full image reference; wins over isaac_sim_version
+    image_lab: ""   # optional full image reference; wins over isaac_lab_version
     # full-isaac: the "everything" image (full Isaac Sim editor + Isaac Lab + Arena).
     # Default = build from source on the workstation at provisioning (build-on-deploy,
     # ~15 min) so the catalog item is shareable without a registry. Optionally set
@@ -69,7 +74,7 @@
     # Installs a WireGuard server on the workstation so the WebRTC viewer is reached
     # over the tunnel instead of public ports: open only wireguard_port/UDP in the
     # catalog access rules and the stream is advertised on the tunnel IP.
-    wireguard_enabled: false
+    wireguard_enabled: true
     wireguard_port: 51820
     wireguard_address: "10.8.0.1/24"     # server tunnel IP + subnet; clients get .2, .3, ...
     # Client public keys (generate on the client: `wg genkey | tee c.key | wg pubkey`).
@@ -331,6 +336,32 @@
         - isaac_option == 'full-isaac'
         - image_full | length == 0
 
+    # "latest" -> the newest version tag on NGC (files/ngc_latest_tag.py), a version ->
+    # that tag. An explicit image_sim / image_lab skips this.
+    - name: Find the newest {{ isaac_option }} version on NGC
+      ansible.builtin.script: >-
+        files/ngc_latest_tag.py nvidia/{{ 'isaac-sim' if isaac_option == 'sim' else 'isaac-lab' }}
+        {{ '--prerelease' if (isaac_sim_prerelease if isaac_option == 'sim' else isaac_lab_prerelease) | bool else '' }}
+      args: { executable: python3 }
+      environment:
+        NGC_API_KEY: "{{ ngc_api_key }}"
+      register: ngc_latest
+      changed_when: false
+      when:
+        - isaac_option in ['sim', 'lab']
+        - (image_sim if isaac_option == 'sim' else image_lab) | length == 0
+        - (isaac_sim_version if isaac_option == 'sim' else isaac_lab_version) == 'latest'
+
+    - name: Image reference from the version
+      ansible.builtin.set_fact:
+        image_sim: "{{ image_sim if image_sim | length > 0 else 'nvcr.io/nvidia/isaac-sim:' ~ (ngc_latest.stdout | trim if isaac_sim_version == 'latest' else isaac_sim_version) }}"
+      when: isaac_option == 'sim'
+
+    - name: Image reference from the version (lab)
+      ansible.builtin.set_fact:
+        image_lab: "{{ image_lab if image_lab | length > 0 else 'nvcr.io/nvidia/isaac-lab:' ~ (ngc_latest.stdout | trim if isaac_lab_version == 'latest' else isaac_lab_version) }}"
+      when: isaac_option == 'lab'
+
     - name: Select image
       ansible.builtin.set_fact:
         # full-isaac: a registry image_full if given, otherwise the locally built tag.
@@ -374,7 +405,7 @@
         recurse: true
       loop: "{{ isaac_dirs }}"
 
-    - name: Pull the pinned image (skipped when full-isaac builds locally)
+    - name: Pull the image (skipped when full-isaac builds locally)
       ansible.builtin.command: "docker pull {{ isaac_image }}"
       when: not (isaac_option == 'full-isaac' and image_full | length == 0)
 

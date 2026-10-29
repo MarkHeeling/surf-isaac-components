@@ -29,7 +29,9 @@ SURF Research Cloud **components** (Ansible playbooks) for Isaac Sim / Lab / Are
 | Parameter | Default | Description |
 |---|---|---|
 | `isaac_option` | `lab` | Which variant to deploy: `full-isaac` / `lab` / `sim` / `arena` |
-| `image_sim` / `image_lab` | `isaac-sim:6.1.0` / `isaac-lab:3.0.0-rc1` | Pre-built NGC image per option (Isaac Sim 6.1.0 GA, Isaac Lab 3.0.0 RC1 on Sim 6.1). Set to `…@sha256:<digest>` to pin exactly; the digest actually pulled is printed by the playbook and stored in `/etc/isaac/image-digest` (see [Pinning images](#pinning-images)) |
+| `isaac_sim_version` / `isaac_lab_version` | `latest` / `latest` | Which version to pull. `latest` = the newest version tag of `nvcr.io/nvidia/isaac-sim` / `isaac-lab` on NGC at provisioning (the playbook lists the registry tags and takes the highest version). Or a tag, e.g. `6.1.0` or `3.0.0-rc1`, to stay on that version |
+| `isaac_sim_prerelease` / `isaac_lab_prerelease` | `false` / `true` | Whether `latest` may pick a pre-release (`-rc`, `-beta`, `-dev`). On for Isaac Lab while 3.0 is a release candidate, because the newest Lab *release* is still the 2.x line on Isaac Sim 5. Turn it off once Lab 3.0 is GA |
+| `image_sim` / `image_lab` | `""` | Optional full image reference, wins over the version: e.g. `nvcr.io/nvidia/isaac-sim@sha256:<digest>` to pin exactly. The tag and digest actually pulled are printed by the playbook and stored in `/etc/isaac/image-digest` (see [Pinning images](#pinning-images)). **Leave it empty to get the newest version**: a catalog item that still sets it stays on that image |
 | `image_full` | `""` | Empty (default) = build full-isaac from source at provisioning. Set to a registry digest to pull a pre-built image instead |
 | `arena_ref` | `8737b4ce…` | full-isaac build-on-deploy: Arena git commit/tag/branch to build. Default = `release/0.3.0` tip (2026-09-15, Arena 0.3 Alpha, builds on `isaac-sim:6.0.1` + Isaac Lab 3.0); change to roll forward |
 | `isaac_data_root` | `/data/isaac-data` | Mount point of the **persistent data volume** (survives a rebuild). Must match the volume's mount path — SURF mounts it at `/data/<volume-name>`, so name the volume `isaac-data` |
@@ -42,7 +44,7 @@ SURF Research Cloud **components** (Ansible playbooks) for Isaac Sim / Lab / Are
 | `nvidia_kernel_modules` | `open` | `open` installs `nvidia-open-<branch>` (NVIDIA's open kernel modules): **required for Blackwell** (RTX PRO 6000) and supported on the A10. `proprietary` = the old `cuda-drivers-<branch>` (A10 only). A driver with the other flavour is purged and replaced |
 | `nvidia_driver_pin_glob` | `580.*` | Keeps the driver on this branch (any 580.x) and blocks a jump to a newer branch (590+) |
 | `nvidia_driver_apt_version` | `""` | Optionally pin an **exact** driver version (e.g. NVIDIA's tested `580.95.05`). Empty = latest 580.x |
-| `wireguard_enabled` | `false` | Install a **WireGuard** server on the workstation so the WebRTC viewer is reached over the tunnel (no public WebRTC ports). See [Option B](#streaming-and-network-access) |
+| `wireguard_enabled` | `true` | Install a **WireGuard** server on the workstation so the WebRTC viewer is reached over the tunnel (no public WebRTC ports). See [Option B](#streaming-and-network-access) |
 | `wireguard_port` | `51820` | WireGuard listen port (UDP). Open only this port in the catalog access rules |
 | `wireguard_address` | `10.8.0.1/24` | Server tunnel IP + subnet. Clients get `.2`, `.3`, … in order of `wireguard_peers` |
 | `wireguard_peers` | `""` | Client **public** keys, comma/space/newline separated. `PUBKEY` or `PUBKEY@10.8.0.7` (explicit tunnel IP). Empty = tunnel up without peers |
@@ -54,7 +56,7 @@ SURF Research Cloud **components** (Ansible playbooks) for Isaac Sim / Lab / Are
 **Versions (2026-09-22):** `sim` = Isaac Sim **6.1.0** GA (2026-09-10) · `lab` = Isaac Lab **3.0.0 RC1** (`v3.0.0-EA`, 2026-09-16, GA targeted end of October 2026) on Isaac Sim 6.1 · `full-isaac` = Arena **release/0.3.0** (0.3 Alpha, 2026-09-10) which still builds on `isaac-sim:6.0.1`. Isaac Lab 3.0 needs Python 3.12 and the pre-built image now runs its runtime as uid 1000 (`isaaclab`), which matches the `isaac_uid` this component already used.
 
 ### Pinning images
-The defaults pull by **tag** (`:6.1.0`, `:3.0.0-rc1`). To freeze a deploy, take the digest the playbook reports (also in `/etc/isaac/image-digest` on the workstation) and set the parameter to `nvcr.io/nvidia/isaac-sim@sha256:<digest>`. To resolve a digest without a workstation, from any machine logged in to NGC:
+By default the playbook pulls the newest version on NGC, so two workstations made a month apart can run different versions. To stay on a version, set `isaac_sim_version` / `isaac_lab_version` to its tag. To freeze a deploy exactly, take the digest the playbook reports (also in `/etc/isaac/image-digest` on the workstation) and set the parameter to `nvcr.io/nvidia/isaac-sim@sha256:<digest>`. To resolve a digest without a workstation, from any machine logged in to NGC:
 
 ```bash
 docker buildx imagetools inspect nvcr.io/nvidia/isaac-sim:6.1.0 | grep Digest
@@ -108,9 +110,9 @@ Isaac streaming needs two ports reachable from your client:
 
 There are **two alternative ways** to make the workstation reachable. Pick one — they set `isaacsim_host` to different values and are not combined:
 
-**Option A — public ports (simplest, for testing).** Open `49100/TCP` and `47998/UDP` to your client IP (`/32`) in the catalog item's access rules. Set `isaacsim_host` via the **Resource** source type with value `workspace_fqdn`, so the stream advertises the workspace's public DNS name.
+**Option A — public ports (simplest, for testing).** Set `wireguard_enabled=false`, open `49100/TCP` and `47998/UDP` to your client IP (`/32`) in the catalog item's access rules. Set `isaacsim_host` via the **Resource** source type with value `workspace_fqdn`, so the stream advertises the workspace's public DNS name.
 
-**Option B — WireGuard (no public WebRTC ports).** Set `wireguard_enabled=true` and open only the WireGuard port (`51820/UDP`, `wireguard_port`) in the access rules. The component installs WireGuard, creates the server key (or uses the `wireguard_private_key` secret), writes `/etc/wireguard/wg0.conf` with one `[Peer]` per key in `wireguard_peers`, starts `wg-quick@wg0`, and advertises the tunnel IP (`wireguard_address`, default `10.8.0.1`) as `isaacsim_host` — leave `isaacsim_host` at its default. The playbook output and the SSH login banner show the **server public key**; a ready-to-fill client config is in `/etc/isaac/wireguard-client-example.conf`.
+**Option B — WireGuard (no public WebRTC ports, the default).** Keep `wireguard_enabled=true` and open only the WireGuard port (`51820/UDP`, `wireguard_port`) in the access rules. The component installs WireGuard, creates the server key (or uses the `wireguard_private_key` secret), writes `/etc/wireguard/wg0.conf` with one `[Peer]` per key in `wireguard_peers`, starts `wg-quick@wg0`, and advertises the tunnel IP (`wireguard_address`, default `10.8.0.1`) as `isaacsim_host` — leave `isaacsim_host` at its default. The playbook output and the SSH login banner show the **server public key**; a ready-to-fill client config is in `/etc/isaac/wireguard-client-example.conf`.
 
 On your client:
 
