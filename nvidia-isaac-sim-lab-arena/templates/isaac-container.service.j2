@@ -22,9 +22,9 @@ ExecStart=/usr/bin/docker run --name isaac --gpus all --network=host \
     -e ISAACSIM_HOST={{ isaacsim_host }} \
     -e ISAACSIM_SIGNAL_PORT={{ isaac_signal_port }} \
     -e ISAACSIM_STREAM_PORT={{ isaac_stream_port }} \
-    -v {{ isaac_data_root }}/isaac-sim/cache/main:/isaac-sim/.cache:rw \
-    -v {{ isaac_data_root }}/isaac-sim/config:/isaac-sim/.nvidia-omniverse/config:rw \
-    -v {{ isaac_data_root }}/isaac-sim/data:/isaac-sim/.local/share/ov/data:rw \
+    -v {{ isaac_data_dir }}/isaac-sim/cache/main:/isaac-sim/.cache:rw \
+    -v {{ isaac_data_dir }}/isaac-sim/config:/isaac-sim/.nvidia-omniverse/config:rw \
+    -v {{ isaac_data_dir }}/isaac-sim/data:/isaac-sim/.local/share/ov/data:rw \
     -u {{ isaac_uid }}:{{ isaac_uid }} --entrypoint bash {{ isaac_image }} -c "./runheadless.sh -v"
 {% elif isaac_option == 'full-isaac' %}
 # full-isaac = Arena source build (full Sim editor + Lab + Arena), validated 23-06-2026.
@@ -40,8 +40,8 @@ ExecStart=/usr/bin/docker run --name isaac --gpus all --network=host --ipc=host 
     -e ACCEPT_EULA=Y \
     -e DOCKER_RUN_USER_ID={{ isaac_uid }} -e DOCKER_RUN_USER_NAME=ubuntu \
     -e DOCKER_RUN_GROUP_ID={{ isaac_uid }} -e DOCKER_RUN_GROUP_NAME=ubuntu \
-    -v {{ isaac_data_root }}/full-isaac/logs:/workspaces/isaaclab_arena/submodules/IsaacLab/logs:rw \
-    -v {{ isaac_data_root }}/full-isaac/data_storage:/workspaces/isaaclab_arena/submodules/IsaacLab/data_storage:rw \
+    -v {{ isaac_data_dir }}/full-isaac/logs:/workspaces/isaaclab_arena/submodules/IsaacLab/logs:rw \
+    -v {{ isaac_data_dir }}/full-isaac/data_storage:/workspaces/isaaclab_arena/submodules/IsaacLab/data_storage:rw \
     -v {{ scratch_root }}/full-isaac/cache:/home/ubuntu/.cache:rw \
     -v {{ scratch_root }}/full-isaac/nv:/home/ubuntu/.nv:rw \
     -v {{ scratch_root }}/full-isaac/nv-omniverse:/home/ubuntu/.nvidia-omniverse:rw \
@@ -56,8 +56,8 @@ ExecStartPre=/usr/bin/install -d -o {{ isaac_uid }} -g {{ isaac_uid }} \
     {{ scratch_root }}/isaac-lab/nv-omniverse
 ExecStart=/usr/bin/docker run --name isaac --gpus all --network=host \
     -e ACCEPT_EULA=Y \
-    -v {{ isaac_data_root }}/isaac-lab/logs:/workspace/isaaclab/logs:rw \
-    -v {{ isaac_data_root }}/isaac-lab/data_storage:/workspace/isaaclab/data_storage:rw \
+    -v {{ isaac_data_dir }}/isaac-lab/logs:/workspace/isaaclab/logs:rw \
+    -v {{ isaac_data_dir }}/isaac-lab/data_storage:/workspace/isaaclab/data_storage:rw \
     -v {{ scratch_root }}/isaac-lab/kit-cache:/isaac-sim/kit/cache:rw \
     -v {{ scratch_root }}/isaac-lab/cache:/root/.cache:rw \
     -v {{ scratch_root }}/isaac-lab/compute:/root/.nv:rw \

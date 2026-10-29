@@ -54,8 +54,9 @@
     arena_src_dir: "/opt/IsaacLab-Arena"
 
     # Persistent data volume (survives a workspace rebuild). SURF mounts an
-    # external volume at /data/<volume-name>, so name the volume "isaac-data".
-    isaac_data_root: "/data/isaac-data"
+    # external volume at /data/<volume-name>. Give the volume's name ("isaac-data")
+    # or its full mount path ("/data/isaac-data"); a name gets /data/ in front.
+    isaac_data_root: "isaac-data"
     # Ephemeral scratch: fast local NVMe, auto-added on GPU flavours, wiped on
     # reboot. Holds the regenerable caches; the systemd unit recreates the dirs
     # at each start. SURF guidance: caches -> scratch, persistent data -> volume.
@@ -294,10 +295,43 @@
       ansible.builtin.set_fact:
         isaac_option: "{{ isaac_option | replace('_', '-') }}"
 
+    # isaac_data_root may be the volume name or its mount path. The result goes into
+    # isaac_data_dir, because a catalog parameter arrives as an extra var that
+    # set_fact cannot override.
+    - name: Data directory from the volume name or path
+      ansible.builtin.set_fact:
+        isaac_data_dir: >-
+          {%- set r = (isaac_data_root | string | trim | regex_replace('/+$', '')) -%}
+          {{ r if r.startswith('/') else '/data/' ~ r }}
+
     - name: Fail clearly on a placeholder isaac_data_root
       ansible.builtin.fail:
-        msg: "isaac_data_root='{{ isaac_data_root }}' is not a real path. Use the volume's mount path, e.g. /data/isaac-data."
-      when: ('<' in isaac_data_root) or ('>' in isaac_data_root) or not isaac_data_root.startswith('/')
+        msg: >-
+          isaac_data_root='{{ isaac_data_root }}' is not a volume name or path.
+          Use the name of the storage volume (e.g. isaac-data) or its mount path (/data/isaac-data).
+      when: >-
+        (isaac_data_root | string | trim | length == 0) or ('<' in isaac_data_dir) or ('>' in isaac_data_dir)
+        or (isaac_data_dir in ['/', '/data'])
+
+    - name: Check that the volume is mounted
+      ansible.builtin.command: "mountpoint -q {{ isaac_data_dir }}"
+      register: isaac_data_mounted
+      changed_when: false
+      failed_when: false
+
+    - name: Fail clearly when the volume is missing
+      ansible.builtin.fail:
+        msg: >-
+          {{ isaac_data_dir }} does not exist. Attach the storage volume to the workspace
+          and check that isaac_data_root matches its name.
+      when: isaac_data_mounted.rc != 0 and not (isaac_data_dir is directory)
+
+    - name: Warn when the data directory is not a separate volume
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: {{ isaac_data_dir }} is not a mount point, so the data land on the boot
+          disk and are lost with the workspace. Attach the storage volume.
+      when: isaac_data_mounted.rc != 0 and (isaac_data_dir is directory)
 
     - name: Fail clearly on an unknown isaac_option
       ansible.builtin.fail:
@@ -391,22 +425,22 @@
         isaac_dirs: "{{ sim_dirs if isaac_option == 'sim' else (full_dirs if isaac_option == 'full-isaac' else lab_dirs) }}"
       vars:
         sim_dirs:
-          - "{{ isaac_data_root }}/isaac-sim/cache/main"
-          - "{{ isaac_data_root }}/isaac-sim/cache/computecache"
-          - "{{ isaac_data_root }}/isaac-sim/config"
-          - "{{ isaac_data_root }}/isaac-sim/data"
-          - "{{ isaac_data_root }}/isaac-sim/logs"
+          - "{{ isaac_data_dir }}/isaac-sim/cache/main"
+          - "{{ isaac_data_dir }}/isaac-sim/cache/computecache"
+          - "{{ isaac_data_dir }}/isaac-sim/config"
+          - "{{ isaac_data_dir }}/isaac-sim/data"
+          - "{{ isaac_data_dir }}/isaac-sim/logs"
         # lab: persistent = training output (logs) + user data_storage (NVIDIA's
         # isaac-lab-data volume). The Omniverse/Kit caches are regenerable -> scratch,
         # (re)created by the systemd unit at each start (scratch is wiped on reboot).
         lab_dirs:
-          - "{{ isaac_data_root }}/isaac-lab/logs"          # training outputs / checkpoints
-          - "{{ isaac_data_root }}/isaac-lab/data_storage"  # user data to preserve between runs
+          - "{{ isaac_data_dir }}/isaac-lab/logs"          # training outputs / checkpoints
+          - "{{ isaac_data_dir }}/isaac-lab/data_storage"  # user data to preserve between runs
         # full-isaac (Arena source build): persistent logs + data_storage. The /data
         # paths are ours; the in-container targets are set in the unit (verify after build).
         full_dirs:
-          - "{{ isaac_data_root }}/full-isaac/logs"
-          - "{{ isaac_data_root }}/full-isaac/data_storage"
+          - "{{ isaac_data_dir }}/full-isaac/logs"
+          - "{{ isaac_data_dir }}/full-isaac/data_storage"
 
     - name: Create persistent cache/data directories
       ansible.builtin.file:
