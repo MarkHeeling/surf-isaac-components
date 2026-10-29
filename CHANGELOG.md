@@ -4,6 +4,23 @@ Notable changes to the `nvidia-isaac-sim-lab-arena` SURF Research Cloud componen
 Images are pinned by digest, so a "version" is the pinned image plus this history.
 Dates are when the change landed in the repo.
 
+## 2026-10-29 — RTX 6000 (Blackwell) flavour: open kernel modules
+
+- **Driver flavour: open kernel modules by default.** New `nvidia_kernel_modules` (`open` |
+  `proprietary`, default `open`). `open` installs and holds `nvidia-open-580` instead of
+  `cuda-drivers-580`. SURF's new RTX 6000 flavour (service notice 2026-10-28) is the RTX PRO 6000
+  Blackwell, and NVIDIA supports Blackwell only on the open kernel modules. The open modules also
+  run the A10 (Turing and newer), so one setting covers both flavours.
+- **Purge on a flavour mismatch.** The driver is now also purged and reinstalled when it is on
+  R580 but has the other module flavour (`modinfo -F license nvidia`: `Dual MIT/GPL` = open). An
+  existing A10 workspace switches to the open modules on its next provisioning; reboot once, as
+  after any driver change.
+- **Branch unchanged (R580).** R580 supports the RTX PRO 6000 and CUDA 13. The 590+ names of the
+  open driver are blocked by the existing 1001 pin on `580.*` and the hold.
+- Not validated on an RTX 6000 workstation yet. On the first deploy: `nvidia-smi`,
+  `cat /proc/driver/nvidia/version` (`Open Kernel Module`), `docker ps`, the editor stream.
+- README: new "GPU flavours: A10 and RTX 6000" section and the `nvidia_kernel_modules` parameter.
+
 ## 2026-09-22 — Roll forward to Isaac Sim 6.1 / Isaac Lab 3.0 RC1 / Arena 0.3, optional WireGuard
 
 - **Images bumped to the newest releases.** `sim` → `nvcr.io/nvidia/isaac-sim:6.1.0` (6.1.0 GA,
