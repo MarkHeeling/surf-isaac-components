@@ -4,7 +4,7 @@
 # lab / full-isaac : run idle; train via  docker exec -it isaac ./isaaclab.sh -p <script> ...
 #                    full-isaac also has the full editor (runheadless) for authoring stages.
 [Unit]
-Description=Isaac {{ isaac_option }} container (Project Paradaim)
+Description=Isaac {{ isaac_variant }} container (Project Paradaim)
 After=docker.service
 Requires=docker.service
 
@@ -16,17 +16,17 @@ ExecStartPre=-/usr/bin/docker rm -f isaac
 # because SURF's persistent volume squashes root -> root cannot write to /data.
 # isaac_uid owns the persistent dirs (playbook chown) and is passed to `-u` here,
 # so the uid never drifts between the chown, the mounts and the container.
-{% if isaac_option == 'sim' %}
+{% if isaac_variant == 'sim' %}
 ExecStart=/usr/bin/docker run --name isaac --gpus all --network=host \
     -e ACCEPT_EULA=Y \
-    -e ISAACSIM_HOST={{ isaacsim_host }} \
+    -e ISAACSIM_HOST={{ stream_host }} \
     -e ISAACSIM_SIGNAL_PORT={{ isaac_signal_port }} \
     -e ISAACSIM_STREAM_PORT={{ isaac_stream_port }} \
     -v {{ isaac_data_dir }}/isaac-sim/cache/main:/isaac-sim/.cache:rw \
     -v {{ isaac_data_dir }}/isaac-sim/config:/isaac-sim/.nvidia-omniverse/config:rw \
     -v {{ isaac_data_dir }}/isaac-sim/data:/isaac-sim/.local/share/ov/data:rw \
     -u {{ isaac_uid }}:{{ isaac_uid }} --entrypoint bash {{ isaac_image }} -c "./runheadless.sh -v"
-{% elif isaac_option == 'full-isaac' %}
+{% elif isaac_variant == 'full-isaac' %}
 # full-isaac = Arena source build (full Sim editor + Lab + Arena), validated 23-06-2026.
 # The image has a CUSTOM entrypoint that creates a user from the DOCKER_RUN_* env vars
 # and runs the command as that user -> do NOT pass -u / --entrypoint (those break it).

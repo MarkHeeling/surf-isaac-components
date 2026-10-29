@@ -4,6 +4,15 @@ Notable changes to the `nvidia-isaac-sim-lab-arena` SURF Research Cloud componen
 Images are pinned by digest, so a "version" is the pinned image plus this history.
 Dates are when the change landed in the repo.
 
+## 2026-10-29 — Stream on the tunnel IP
+
+- With WireGuard on, the stream was still advertised on the catalog value of
+  `isaacsim_host` (for example `127.0.0.1`) instead of the tunnel IP: a catalog parameter
+  is an extra var and `set_fact` cannot override it. The address now goes into the fact
+  `stream_host` (tunnel IP with WireGuard, `isaacsim_host` without), which the systemd unit uses.
+- Same fix for `isaac_option`: the normalised value (`full_isaac` → `full-isaac`) goes
+  into `isaac_variant`.
+
 ## 2026-10-29 — Volume by name
 
 - `isaac_data_root` takes the **name** of the storage volume (default `isaac-data`) or its

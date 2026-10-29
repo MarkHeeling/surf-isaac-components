@@ -291,9 +291,11 @@
     - name: Component state directory
       ansible.builtin.file: { path: /etc/isaac, state: directory, mode: "0755" }
 
+    # A catalog parameter arrives as an extra var that set_fact cannot override, so
+    # the normalised value goes into isaac_variant.
     - name: Normalise isaac_option (accept full_isaac as full-isaac)
       ansible.builtin.set_fact:
-        isaac_option: "{{ isaac_option | replace('_', '-') }}"
+        isaac_variant: "{{ isaac_option | trim | lower | replace('_', '-') }}"
 
     # isaac_data_root may be the volume name or its mount path. The result goes into
     # isaac_data_dir, because a catalog parameter arrives as an extra var that
@@ -333,17 +335,17 @@
           disk and are lost with the workspace. Attach the storage volume.
       when: isaac_data_mounted.rc != 0 and (isaac_data_dir is directory)
 
-    - name: Fail clearly on an unknown isaac_option
+    - name: Fail clearly on an unknown isaac_variant
       ansible.builtin.fail:
-        msg: "isaac_option='{{ isaac_option }}' is invalid. Use one of: full-isaac, lab, sim, arena."
-      when: isaac_option not in ['full-isaac', 'lab', 'sim', 'arena']
+        msg: "isaac_option='{{ isaac_variant }}' is invalid. Use one of: full-isaac, lab, sim, arena."
+      when: isaac_variant not in ['full-isaac', 'lab', 'sim', 'arena']
 
     - name: Arena (standalone) not supported yet (no pre-built image)
       ansible.builtin.fail:
         msg: >-
           isaac_option=arena has no pre-built image yet. Arena IS included in the
           'full-isaac' option (built from source) -> use that, or 'sim' / 'lab'.
-      when: isaac_option == 'arena'
+      when: isaac_variant == 'arena'
 
     # full-isaac with no registry image_full -> build the Arena image from source here
     # (it pulls in Isaac Lab + the full Isaac Sim). ~15 min; uses the NGC login above.
@@ -352,7 +354,7 @@
         name: [git, git-lfs]
         update_cache: true
       when:
-        - isaac_option == 'full-isaac'
+        - isaac_variant == 'full-isaac'
         - image_full | length == 0
 
     - name: Build the full-isaac image from source (Arena -> Lab + full Sim)
@@ -372,7 +374,7 @@
       args:
         executable: /bin/bash
       when:
-        - isaac_option == 'full-isaac'
+        - isaac_variant == 'full-isaac'
         - image_full | length == 0
 
     # "latest" -> the newest version tag on NGC (files/ngc_latest_tag.py), a version ->
@@ -384,34 +386,34 @@
         sim_image_ref: "{{ '' if (image_sim | default('') | trim) in ['', 'latest'] else image_sim | trim }}"
         lab_image_ref: "{{ '' if (image_lab | default('') | trim) in ['', 'latest'] else image_lab | trim }}"
 
-    - name: Find the newest {{ isaac_option }} version on NGC
+    - name: Find the newest {{ isaac_variant }} version on NGC
       ansible.builtin.script: >-
-        files/ngc_latest_tag.py nvidia/{{ 'isaac-sim' if isaac_option == 'sim' else 'isaac-lab' }}
-        {{ '--prerelease' if (isaac_sim_prerelease if isaac_option == 'sim' else isaac_lab_prerelease) | bool else '' }}
+        files/ngc_latest_tag.py nvidia/{{ 'isaac-sim' if isaac_variant == 'sim' else 'isaac-lab' }}
+        {{ '--prerelease' if (isaac_sim_prerelease if isaac_variant == 'sim' else isaac_lab_prerelease) | bool else '' }}
       args: { executable: python3 }
       environment:
         NGC_API_KEY: "{{ ngc_api_key }}"
       register: ngc_latest
       changed_when: false
       when:
-        - isaac_option in ['sim', 'lab']
-        - (sim_image_ref if isaac_option == 'sim' else lab_image_ref) | length == 0
-        - (isaac_sim_version if isaac_option == 'sim' else isaac_lab_version) | trim in ['', 'latest']
+        - isaac_variant in ['sim', 'lab']
+        - (sim_image_ref if isaac_variant == 'sim' else lab_image_ref) | length == 0
+        - (isaac_sim_version if isaac_variant == 'sim' else isaac_lab_version) | trim in ['', 'latest']
 
     - name: Image reference from the version
       ansible.builtin.set_fact:
         sim_image_ref: "{{ sim_image_ref if sim_image_ref | length > 0 else 'nvcr.io/nvidia/isaac-sim:' ~ (ngc_latest.stdout | trim if isaac_sim_version | trim in ['', 'latest'] else isaac_sim_version | trim) }}"
-      when: isaac_option == 'sim'
+      when: isaac_variant == 'sim'
 
     - name: Image reference from the version (lab)
       ansible.builtin.set_fact:
         lab_image_ref: "{{ lab_image_ref if lab_image_ref | length > 0 else 'nvcr.io/nvidia/isaac-lab:' ~ (ngc_latest.stdout | trim if isaac_lab_version | trim in ['', 'latest'] else isaac_lab_version | trim) }}"
-      when: isaac_option == 'lab'
+      when: isaac_variant == 'lab'
 
     - name: Select image
       ansible.builtin.set_fact:
         # full-isaac: a registry image_full if given, otherwise the locally built tag.
-        isaac_image: "{{ sim_image_ref if isaac_option == 'sim' else (lab_image_ref if isaac_option == 'lab' else (image_full if image_full | length > 0 else 'isaaclab_arena:latest')) }}"
+        isaac_image: "{{ sim_image_ref if isaac_variant == 'sim' else (lab_image_ref if isaac_variant == 'lab' else (image_full if image_full | length > 0 else 'isaaclab_arena:latest')) }}"
 
     - name: Set container UID and persistent directories per option
       ansible.builtin.set_fact:
@@ -421,8 +423,8 @@
         # passed to `docker run -u` in the unit, so the three never drift.
         # NB full-isaac is source-built: verify its uid + in-container paths against the
         # built image (probe with `docker inspect` / `ls`, like the lab option).
-        isaac_uid: "{{ '1234' if isaac_option == 'sim' else '1000' }}"
-        isaac_dirs: "{{ sim_dirs if isaac_option == 'sim' else (full_dirs if isaac_option == 'full-isaac' else lab_dirs) }}"
+        isaac_uid: "{{ '1234' if isaac_variant == 'sim' else '1000' }}"
+        isaac_dirs: "{{ sim_dirs if isaac_variant == 'sim' else (full_dirs if isaac_variant == 'full-isaac' else lab_dirs) }}"
       vars:
         sim_dirs:
           - "{{ isaac_data_dir }}/isaac-sim/cache/main"
@@ -453,7 +455,7 @@
 
     - name: Pull the image (skipped when full-isaac builds locally)
       ansible.builtin.command: "docker pull {{ isaac_image }}"
-      when: not (isaac_option == 'full-isaac' and image_full | length == 0)
+      when: not (isaac_variant == 'full-isaac' and image_full | length == 0)
 
     # Record which digest the tag resolved to, so a tag-pinned default can be turned
     # into a digest pin (paste it into image_sim / image_lab) and so a rebuild can be
@@ -463,14 +465,14 @@
       register: isaac_image_digest
       changed_when: false
       failed_when: false
-      when: not (isaac_option == 'full-isaac' and image_full | length == 0)
+      when: not (isaac_variant == 'full-isaac' and image_full | length == 0)
 
     - name: Write the resolved digest to /etc/isaac/image-digest
       ansible.builtin.copy:
         dest: /etc/isaac/image-digest
         mode: "0644"
         content: |
-          # {{ isaac_option }} image pulled by the SURF component on {{ ansible_date_time.date }}
+          # {{ isaac_variant }} image pulled by the SURF component on {{ ansible_date_time.date }}
           tag={{ isaac_image }}
           digest={{ isaac_image_digest.stdout | default('') }}
       when:
@@ -629,10 +631,11 @@
           - "{{ 'wg show: ' ~ wg_show.stdout_lines[0] if wg_show.rc == 0 else 'WARNING: wg show wg0 failed (rc=' ~ wg_show.rc ~ ')' }}"
       when: wireguard_enabled | bool
 
-    - name: Advertise the WireGuard tunnel IP to the streaming client
+    # isaacsim_host is a catalog parameter (an extra var), so set_fact cannot
+    # override it: the advertised address goes into stream_host.
+    - name: Address the streaming client connects to
       ansible.builtin.set_fact:
-        isaacsim_host: "{{ wg_server_ip }}"
-      when: wireguard_enabled | bool
+        stream_host: "{{ wg_server_ip if wireguard_enabled | bool else isaacsim_host }}"
 
     # ------------------------------------------------------------------ 6. systemd unit
     - name: Install the Isaac systemd unit
