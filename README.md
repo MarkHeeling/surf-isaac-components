@@ -28,7 +28,7 @@ SURF Research Cloud **components** (Ansible playbooks) for Isaac Sim / Lab / Are
 
 | Parameter | Default | Description |
 |---|---|---|
-| `isaac_option` | `lab` | Which variant to deploy: `full-isaac` / `lab` / `sim` / `arena` |
+| `isaac_option` | `lab` | Which variant to deploy: `full-isaac` / `lab` / `sim` / `arena` (`full_isaac` and capitals are accepted too) |
 | `isaac_sim_version` / `isaac_lab_version` | `latest` / `latest` | Which version to pull. `latest` = the newest version tag of `nvcr.io/nvidia/isaac-sim` / `isaac-lab` on NGC at provisioning (the playbook lists the registry tags and takes the highest version). Or a tag, e.g. `6.1.0` or `3.0.0-rc1`, to stay on that version |
 | `isaac_sim_prerelease` / `isaac_lab_prerelease` | `false` / `true` | Whether `latest` may pick a pre-release (`-rc`, `-beta`, `-dev`). On for Isaac Lab while 3.0 is a release candidate, because the newest Lab *release* is still the 2.x line on Isaac Sim 5. Turn it off once Lab 3.0 is GA |
 | `image_sim` / `image_lab` | `""` | Optional full image reference, wins over the version (`""` and `latest` both mean: use the version): e.g. `nvcr.io/nvidia/isaac-sim@sha256:<digest>` to pin exactly. The tag and digest actually pulled are printed by the playbook and stored in `/etc/isaac/image-digest` (see [Pinning images](#pinning-images)). **Leave it empty to get the newest version**: a catalog item that still sets it stays on that image |
@@ -36,7 +36,7 @@ SURF Research Cloud **components** (Ansible playbooks) for Isaac Sim / Lab / Are
 | `arena_ref` | `8737b4ce…` | full-isaac build-on-deploy: Arena git commit/tag/branch to build. Default = `release/0.3.0` tip (2026-09-15, Arena 0.3 Alpha, builds on `isaac-sim:6.0.1` + Isaac Lab 3.0); change to roll forward |
 | `isaac_data_root` | `isaac-data` | The **persistent data volume** (survives a rebuild): its **name** (`isaac-data`) or its mount path (`/data/isaac-data`). SURF mounts a volume at `/data/<volume-name>`, so a name gets `/data/` in front. The playbook stops when the directory does not exist and warns when it is not a separate mount |
 | `scratch_root` | `/mnt/scratch` | Mount point of the **ephemeral scratch disk** (fast local NVMe, auto-added on GPU flavours, **wiped on reboot**). Holds the regenerable Omniverse/Kit caches; the unit recreates the dirs at each start |
-| `isaacsim_host` | `127.0.0.1` | Address the streaming client connects to. `127.0.0.1` only works locally — for remote streaming set it to a reachable address: easiest is SURF's **Resource** source type with value `workspace_fqdn` (auto-fills the workspace DNS name). With `wireguard_enabled` the playbook overrides it with the tunnel IP |
+| `isaacsim_host` | `127.0.0.1` | Address the streaming client connects to. `127.0.0.1` only works locally — for remote streaming set it to a reachable address: easiest is SURF's **Resource** source type with value `workspace_fqdn` (auto-fills the workspace DNS name). With `wireguard_enabled` it is ignored: the stream is advertised on the tunnel IP (`wireguard_address`) |
 | `isaac_signal_port` | `49100` | WebRTC **signaling** (TCP) — establishes the connection between client and workstation |
 | `isaac_stream_port` | `47998` | WebRTC **media** (UDP) — carries the video stream itself |
 | `manage_nvidia_driver` | `true` | Installs and pins the NVIDIA driver to the version recommended by NVIDIA. `false` = leave the CUDA component's driver as-is |
