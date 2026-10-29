@@ -4,6 +4,15 @@ Notable changes to the `nvidia-isaac-sim-lab-arena` SURF Research Cloud componen
 Images are pinned by digest, so a "version" is the pinned image plus this history.
 Dates are when the change landed in the repo.
 
+## 2026-10-29 — Volume by name
+
+- `isaac_data_root` takes the **name** of the storage volume (default `isaac-data`) or its
+  mount path. SURF mounts a volume at `/data/<name>`, so a name gets `/data/` in front.
+  The result goes into the fact `isaac_data_dir`, which the tasks and the systemd unit
+  now use (a catalog parameter is an extra var and cannot be overridden).
+- The playbook stops when the data directory does not exist (volume not attached or a
+  wrong name) and warns when it is not a mount point (data would land on the boot disk).
+
 ## 2026-10-29 — image_sim "latest", check on isaac_data_root
 
 - `image_sim` / `image_lab` set to `latest` now mean the same as empty (use
