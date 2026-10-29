@@ -38,7 +38,8 @@ SURF Research Cloud **components** (Ansible playbooks) for Isaac Sim / Lab / Are
 | `isaac_signal_port` | `49100` | WebRTC **signaling** (TCP) — establishes the connection between client and workstation |
 | `isaac_stream_port` | `47998` | WebRTC **media** (UDP) — carries the video stream itself |
 | `manage_nvidia_driver` | `true` | Installs and pins the NVIDIA driver to the version recommended by NVIDIA. `false` = leave the CUDA component's driver as-is |
-| `nvidia_driver_branch` | `580` | Driver branch to install. **R580** is validated by NVIDIA for the A10 (Ampere) with Isaac Sim 6.0 |
+| `nvidia_driver_branch` | `580` | Driver branch to install. **R580** runs the A10 (Ampere) and the RTX PRO 6000 (Blackwell) with Isaac Sim 6.x and CUDA 13 |
+| `nvidia_kernel_modules` | `open` | `open` installs `nvidia-open-<branch>` (NVIDIA's open kernel modules): **required for Blackwell** (RTX PRO 6000) and supported on the A10. `proprietary` = the old `cuda-drivers-<branch>` (A10 only). A driver with the other flavour is purged and replaced |
 | `nvidia_driver_pin_glob` | `580.*` | Keeps the driver on this branch (any 580.x) and blocks a jump to a newer branch (590+) |
 | `nvidia_driver_apt_version` | `""` | Optionally pin an **exact** driver version (e.g. NVIDIA's tested `580.95.05`). Empty = latest 580.x |
 | `wireguard_enabled` | `false` | Install a **WireGuard** server on the workstation so the WebRTC viewer is reached over the tunnel (no public WebRTC ports). See [Option B](#streaming-and-network-access) |
@@ -60,12 +61,18 @@ docker buildx imagetools inspect nvcr.io/nvidia/isaac-sim:6.1.0 | grep Digest
 docker buildx imagetools inspect nvcr.io/nvidia/isaac-lab:3.0.0-rc1 | grep Digest
 ```
 
+### GPU flavours: A10 and RTX 6000
+The component runs on SURF HPC Cloud's `A10` flavours and on the `RTX 6000` flavour that replaces the RTX 2080 (service notice 2026-10-28). SURF's RTX 6000 is the **RTX PRO 6000 Blackwell** (96 GB, compute capability 12.0). Add the flavour to the catalog item in the portal; nothing else changes per flavour:
+- **Driver:** the same R580 pin, with the open kernel modules (default `nvidia_kernel_modules: open`). Blackwell does not run on the proprietary modules. Check after the first boot: `cat /proc/driver/nvidia/version` shows `Open Kernel Module`.
+- **Images:** Isaac Sim 6.1 lists the RTX PRO 6000 Blackwell as its "Ideal" GPU; the NGC images ship a PyTorch with sm_120.
+- **Prices:** SURF has one GPU credit tariff in 2026 and will differentiate by GPU type from 2027.
+
 ### Multiple GPUs (e.g. 2× A10)
-The unit starts the container with `--gpus all`, so every GPU on the flavour is visible inside it. Isaac Sim renders/streams on one GPU; Isaac Lab training picks its device per run, e.g. `./isaaclab.sh -p scripts/... --device cuda:1` to keep training off the GPU that drives the stream. Both A10s stay on the R580 driver branch.
+The unit starts the container with `--gpus all`, so every GPU on the flavour is visible inside it. Isaac Sim renders/streams on one GPU; Isaac Lab training picks its device per run, e.g. `./isaaclab.sh -p scripts/... --device cuda:1` to keep training off the GPU that drives the stream. All GPUs stay on the R580 driver branch.
 
 **Catalog item order:** `… → CUDA component → this component`
 
-> **First boot:** the CUDA component installs a newer driver, so this component downgrades it to R580. The new driver only loads after a reboot — SURF does not reboot automatically. After the first provisioning, `nvidia-smi` reports a "Driver/library version mismatch"; reboot the workspace once (`sudo systemctl reboot -i`) and `isaac.service` comes up on its own.
+> **First boot:** the CUDA component installs a newer driver, so this component replaces it with R580 (open kernel modules). The new driver only loads after a reboot — SURF does not reboot automatically. After the first provisioning, `nvidia-smi` reports a "Driver/library version mismatch"; reboot the workspace once (`sudo systemctl reboot -i`) and `isaac.service` comes up on its own.
 
 ### Storage layout (lab)
 Following the [Isaac Lab Docker volumes](https://isaac-sim.github.io/IsaacLab/main/source/deployment/docker.html#understanding-the-mounted-volumes), storage is split by what is worth keeping. The container runs as a non-root uid (`isaac_uid`) that owns these dirs, because the image runs as root but SURF's external volume squashes root.

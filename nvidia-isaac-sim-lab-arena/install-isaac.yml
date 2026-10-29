@@ -11,9 +11,13 @@
 
     # --- Driver pin --------------------------------------------
     manage_nvidia_driver: true        # false = use drivers from CUDA component
-    nvidia_driver_branch: "580"       # R580 production branch (validated for A10/Ampere)
+    nvidia_driver_branch: "580"       # R580 production branch (A10/Ampere and RTX PRO 6000/Blackwell)
+    # Kernel-module flavour. "open" (default) installs nvidia-open-<branch>: required
+    # for Blackwell (RTX PRO 6000) and supported on Turing and newer, so also on the A10.
+    # "proprietary" = the old cuda-drivers-<branch> metapackage (A10 only).
+    nvidia_kernel_modules: "open"
     nvidia_driver_pin_glob: "580.*"   # apt preference pins to this branch (any 580.x)
-    nvidia_driver_apt_version: ""     # optional exact apt version (e.g. 580.95.05-0ubuntu1); empty = metapackage (latest 580)
+    nvidia_driver_apt_version: ""     # optional exact apt version of the metapackage (e.g. 580.95.05-1ubuntu1); empty = latest 580
 
     # --- Images ---------------------------------------------------------------
     # Pre-built NGC images. Pin by DIGEST for a reproducible rollout:
@@ -91,7 +95,13 @@
   tasks:
     # ---------------------------------------------------- 0. NVIDIA driver R580 pin
     # Runs AFTER the SURF CUDA component. Goal: put the driver on the R580 branch
-    # and hold it, so a rebuild/`apt upgrade` does not pull it to 590+.
+    # with the open kernel modules (Blackwell needs them) and hold it, so a
+    # rebuild/`apt upgrade` does not pull it to 590+.
+    - name: Driver metapackage for the chosen kernel-module flavour
+      ansible.builtin.set_fact:
+        nvidia_driver_pkg: "{{ ('nvidia-open-' if nvidia_kernel_modules == 'open' else 'cuda-drivers-') ~ nvidia_driver_branch }}"
+      when: manage_nvidia_driver | bool
+
     - name: Get current NVIDIA driver version
       ansible.builtin.command: nvidia-smi --query-gpu=driver_version --format=csv,noheader
       register: nvidia_current
@@ -99,14 +109,26 @@
       failed_when: false
       when: manage_nvidia_driver | bool
 
-    - name: Release existing holds (allow driver change)
-      ansible.builtin.command: >-
-        apt-mark unhold cuda-drivers-{{ nvidia_driver_branch }} cuda-drivers nvidia-driver-{{ nvidia_driver_branch }}
+    # License of the installed kernel module: "Dual MIT/GPL" = open, "NVIDIA" = proprietary.
+    # Works without the module being loaded; empty when no driver is installed.
+    - name: Get the flavour of the installed kernel module
+      ansible.builtin.command: modinfo -F license nvidia
+      register: nvidia_module_license
       changed_when: false
       failed_when: false
       when: manage_nvidia_driver | bool
 
-    - name: Purge the old driver if it is NOT on the R580 branch (downgrade requires purge)
+    - name: Release existing holds (allow driver change)
+      ansible.builtin.command: >-
+        apt-mark unhold cuda-drivers-{{ nvidia_driver_branch }} cuda-drivers nvidia-driver-{{ nvidia_driver_branch }}
+        nvidia-open-{{ nvidia_driver_branch }} nvidia-open nvidia-driver-{{ nvidia_driver_branch }}-open
+      changed_when: false
+      failed_when: false
+      when: manage_nvidia_driver | bool
+
+    # Purge when the driver is on another branch (a downgrade requires it) or has the
+    # other kernel-module flavour (an A10 workspace built before the switch to open).
+    - name: Purge the old driver if it is NOT R580 with the chosen module flavour
       ansible.builtin.shell: |
         apt-get remove --purge -y '^nvidia-.*' 'cuda-drivers*' 'libnvidia-*'
         apt-get autoremove -y
@@ -115,11 +137,14 @@
         - manage_nvidia_driver | bool
         - nvidia_current.stdout is defined
         - nvidia_current.stdout | length > 0
-        - not nvidia_current.stdout.startswith(nvidia_driver_branch)
+        - >-
+          (not nvidia_current.stdout.startswith(nvidia_driver_branch))
+          or ((nvidia_module_license.stdout | default('')) | length > 0
+              and (('MIT' in nvidia_module_license.stdout) != (nvidia_kernel_modules == 'open')))
 
     - name: Install the R580 driver (metapackage from the NVIDIA CUDA repo)
       ansible.builtin.apt:
-        name: "cuda-drivers-{{ nvidia_driver_branch }}{{ ('=' + nvidia_driver_apt_version) if nvidia_driver_apt_version else '' }}"
+        name: "{{ nvidia_driver_pkg }}{{ ('=' + nvidia_driver_apt_version) if nvidia_driver_apt_version else '' }}"
         state: present
         update_cache: true
         allow_downgrade: true
@@ -127,11 +152,13 @@
       when: manage_nvidia_driver | bool
 
     - name: Hold the driver (block automatic upgrades)
-      ansible.builtin.command: "apt-mark hold cuda-drivers-{{ nvidia_driver_branch }}"
+      ansible.builtin.command: "apt-mark hold {{ nvidia_driver_pkg }}"
       register: nvidia_hold
       changed_when: "'already set on hold' not in nvidia_hold.stdout and 'already set to hold' not in nvidia_hold.stdout"
       when: manage_nvidia_driver | bool
 
+    # From 590 on the Ubuntu packages drop the branch from their name (nvidia-open).
+    # Those are kept off by the 1001 pin on 580.* plus the hold, not by name.
     - name: Apt preference — prefer R580, hard-block 590
       ansible.builtin.copy:
         dest: /etc/apt/preferences.d/nvidia-pin-580
@@ -141,7 +168,7 @@
           Pin: version {{ nvidia_driver_pin_glob }}
           Pin-Priority: 1001
 
-          Package: cuda-drivers-590 nvidia-driver-590
+          Package: cuda-drivers-590 nvidia-driver-590 nvidia-open-590 nvidia-driver-590-open
           Pin: version *
           Pin-Priority: -1
       when: manage_nvidia_driver | bool
