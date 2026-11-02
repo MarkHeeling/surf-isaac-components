@@ -4,6 +4,16 @@ Notable changes to the `nvidia-isaac-sim-lab-arena` SURF Research Cloud componen
 Images are pinned by digest, so a "version" is the pinned image plus this history.
 Dates are when the change landed in the repo.
 
+## 2026-11-02 — URSim follows the Isaac volume
+
+- `ursim_data_root` defaults to `auto`: URSim uses the volume of the Isaac component,
+  read from `/etc/isaac/data-dir`. The Isaac component now writes that file after it
+  has checked the volume. Before, a fixed `isaac-data` in the catalog item put the URSim
+  data on the boot disk whenever the user's volume had another name.
+- `auto` without that file (URSim without the Isaac component, or on a workstation
+  provisioned before this change) stops with a clear message. A volume name or path
+  still works as before.
+
 ## 2026-11-02 — New optional component: universal-robots-ursim
 
 - `universal-robots-ursim/install-ursim.yml` runs URSim (e-Series, default 5.21 / UR5e) as a

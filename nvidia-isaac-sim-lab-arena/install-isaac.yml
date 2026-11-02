@@ -340,6 +340,14 @@
           disk and are lost with the workspace. Attach the storage volume.
       when: isaac_data_mounted.rc != 0 and (isaac_data_dir is directory)
 
+    # Other components (universal-robots-ursim) read this, so they use the same volume
+    # without a second volume parameter in the catalog item.
+    - name: Record the data directory for other components
+      ansible.builtin.copy:
+        content: "{{ isaac_data_dir }}\n"
+        dest: /etc/isaac/data-dir
+        mode: "0644"
+
     - name: Fail clearly on an unknown isaac_variant
       ansible.builtin.fail:
         msg: "isaac_option='{{ isaac_variant }}' is invalid. Use one of: full-isaac, lab, sim, arena."
