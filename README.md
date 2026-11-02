@@ -158,7 +158,7 @@ URSim is the official Universal Robots simulator: the real controller and PolySc
 |---|---|---|
 | `ursim_version` | `5.21` | URSim image tag. **Match the PolyScope version of the real robot** (tablet: menu → About) |
 | `ursim_robot_model` | `UR5E` | Robot model (`UR3E`, `UR5E`, `UR7E`, `UR10E`, `UR12E`, `UR16E`, `UR15`, `UR20`, `UR30`) |
-| `ursim_data_root` | `isaac-data` | Volume name or mount path; data go to `<volume>/ursim` |
+| `ursim_data_root` | `auto` | `auto` = the volume of the Isaac component (read from `/etc/isaac/data-dir`, which that component writes), so the catalog item needs only one volume parameter. Or a volume name / mount path. Data go to `<volume>/ursim` |
 | `ursim_bind_address` | `10.8.0.1` | Host address the ports listen on. Default = WireGuard tunnel IP, so nothing is public. Use `127.0.0.1` without WireGuard (SSH tunnel) |
 | `ursim_subnet` / `ursim_ip` | `172.30.56.0/24` / `.101` | Private Docker network. Not `192.168.56.0/24` from the ROS-driver docs: that overlaps SURF's `192.168.0.0/16` |
 | `ursim_autostart` | `false` | `false` = installed but **not started at boot** (the workstation is mainly for training); start it with `sudo systemctl start ursim`. `true` = starts at every boot |

@@ -15,10 +15,11 @@
     ursim_version: "5.21"
     ursim_robot_model: "UR5E"          # UR3E, UR5E, UR7E, UR10E, UR12E, UR16E, UR15, UR20, UR30
 
-    # Persistent data volume (name or mount path, same rule as isaac_data_root).
-    # Programs, the installation (incl. the confirmed safety config) and PolyScope
-    # settings live in <volume>/ursim and survive a rebuild.
-    ursim_data_root: "isaac-data"
+    # Persistent data volume. "auto" (default) = the volume of the Isaac component,
+    # read from /etc/isaac/data-dir. Or a volume name / mount path (same rule as
+    # isaac_data_root). Programs, the installation (incl. the confirmed safety config)
+    # and PolyScope settings live in <volume>/ursim and survive a rebuild.
+    ursim_data_root: "auto"
 
     # Host address the published ports listen on. Default = the WireGuard tunnel IP,
     # so PolyScope/RTDE are never on the public interface. Use 127.0.0.1 without
@@ -46,14 +47,40 @@
 
   tasks:
     # ------------------------------------------------------------ 1. Data directory
-    - name: Data directory from the volume name or path
+    - name: Is ursim_data_root "auto"?
       ansible.builtin.set_fact:
-        ursim_data_dir: >-
-          {%- set r = (ursim_data_root | string | trim | regex_replace('/+$', '')) -%}
-          {{ (r if r.startswith('/') else '/data/' ~ r) ~ '/ursim' }}
+        ursim_data_auto: "{{ (ursim_data_root | string | trim | lower) in ['auto', ''] }}"
+
+    - name: Read the data directory of the Isaac component
+      ansible.builtin.slurp:
+        src: /etc/isaac/data-dir
+      register: isaac_data_dir_file
+      failed_when: false
+      when: ursim_data_auto | bool
+
+    - name: Fail clearly when there is no Isaac volume to follow
+      ansible.builtin.fail:
+        msg: >-
+          ursim_data_root is "auto", but /etc/isaac/data-dir does not exist. Put this
+          component after nvidia-isaac-sim-lab-arena in the catalog item, or set
+          ursim_data_root to the name of the storage volume.
+      when: (ursim_data_auto | bool) and ('content' not in isaac_data_dir_file)
+
+    # The result goes into ursim_volume_dir: a catalog parameter arrives as an extra
+    # var that set_fact cannot override.
+    - name: Data directory from the Isaac volume, the volume name or the path
+      ansible.builtin.set_fact:
         ursim_volume_dir: >-
+          {%- if ursim_data_auto | bool -%}
+          {{ isaac_data_dir_file.content | b64decode | trim | regex_replace('/+$', '') }}
+          {%- else -%}
           {%- set r = (ursim_data_root | string | trim | regex_replace('/+$', '')) -%}
           {{ r if r.startswith('/') else '/data/' ~ r }}
+          {%- endif -%}
+
+    - name: Data directory for URSim
+      ansible.builtin.set_fact:
+        ursim_data_dir: "{{ ursim_volume_dir }}/ursim"
         ursim_image: "universalrobots/ursim_e-series:{{ ursim_version | string | trim }}"
         ursim_host_ip: "{{ ursim_subnet | regex_replace('\\.\\d+/\\d+$', '.1') }}"
 
