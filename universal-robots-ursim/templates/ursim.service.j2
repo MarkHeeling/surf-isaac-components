@@ -1,0 +1,24 @@
+# Managed by the universal-robots-ursim SURF component.
+[Unit]
+Description=URSim {{ ursim_robot_model }} {{ ursim_version }} (PolyScope on {{ ursim_bind_address }}:6080)
+Requires=docker.service
+Wants=network-online.target{% if ursim_bind_address.startswith('10.') %} wg-quick@wg0.service{% endif %}
+
+After=docker.service network-online.target{% if ursim_bind_address.startswith('10.') %} wg-quick@wg0.service{% endif %}
+
+
+[Service]
+Type=simple
+WorkingDirectory={{ ursim_tools_dir }}
+ExecStartPre=-/usr/bin/docker compose down
+ExecStart=/usr/bin/docker compose up --remove-orphans
+{% if ursim_auto_remote | bool %}
+ExecStartPost=-{{ ursim_tools_dir }}/ursim-ready.sh
+{% endif %}
+ExecStop=/usr/bin/docker compose down
+Restart=on-failure
+RestartSec=15
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target

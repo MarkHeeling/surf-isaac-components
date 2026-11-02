@@ -4,6 +4,19 @@ Notable changes to the `nvidia-isaac-sim-lab-arena` SURF Research Cloud componen
 Images are pinned by digest, so a "version" is the pinned image plus this history.
 Dates are when the change landed in the repo.
 
+## 2026-11-02 — New optional component: universal-robots-ursim
+
+- `universal-robots-ursim/install-ursim.yml` runs URSim (e-Series, default 5.21 / UR5e) as a
+  container under `ursim.service`, ports only on the WireGuard IP (`ursim_bind_address`).
+- Not started at boot by default (`ursim_autostart: false`): the workstation is mainly for
+  training, so URSim runs on demand with `sudo systemctl start ursim`.
+- Data (programs, installation, PolyScope settings, URCap) on the volume in `<volume>/ursim`;
+  tools (compose file, `ursim-ready.sh`, `test_rtde.py`, venv with ur_rtde) in `/opt/ursim`.
+- `ursim-ready.sh` confirms a pending safety configuration and switches PolyScope to Remote
+  Control after every start; without both, ur_rtde and the ROS driver are refused.
+- Validated on the RTX 6000 workstation: on a fresh volume (safety confirmation and Remote
+  switch done by the script, ur_rtde smoke test passes) and on an existing one; a second
+  run reports no changes.
 ## 2026-11-02 — Isaac does not start at boot by default
 
 - New parameter `isaac_autostart` (default `false`). The unit and image are installed

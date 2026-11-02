@@ -1,0 +1,27 @@
+# Managed by the universal-robots-ursim SURF component — rerun the component to change.
+name: ursim
+services:
+  ursim:
+    image: {{ ursim_image }}
+    container_name: ursim
+    environment:
+      ROBOT_MODEL: {{ ursim_robot_model }}
+    volumes:
+      - {{ ursim_data_dir }}/programs:/ursim/programs      # programs + installation (confirmed safety config)
+      - {{ ursim_data_dir }}/urcaps:/urcaps                # External Control URCap
+      - {{ ursim_data_dir }}/polyscope:/ursim/.polyscope   # PolyScope settings (Remote Control enabled)
+    networks:
+      ursim_net:
+        ipv4_address: {{ ursim_ip }}
+    ports:
+      - "{{ ursim_bind_address }}:6080:6080"                # PolyScope in the browser (noVNC)
+      - "{{ ursim_bind_address }}:5900:5900"                # PolyScope via a VNC client
+      - "{{ ursim_bind_address }}:29999:29999"              # dashboard server
+      - "{{ ursim_bind_address }}:30001-30004:30001-30004"  # primary/secondary/realtime/RTDE
+    restart: "no"                                          # systemd restarts it
+networks:
+  ursim_net:
+    name: ursim_net
+    ipam:
+      config:
+        - subnet: {{ ursim_subnet }}

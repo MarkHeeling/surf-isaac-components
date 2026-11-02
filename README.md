@@ -7,6 +7,7 @@ SURF Research Cloud **components** (Ansible playbooks) for Isaac Sim / Lab / Are
 | Component | Path | Purpose |
 |---|---|---|
 | `nvidia-isaac-sim-lab-arena` | `nvidia-isaac-sim-lab-arena/install-isaac.yml` | Headless GPU workstation running Isaac Sim / Lab / Arena as a container, pinned by digest |
+| `universal-robots-ursim` | `universal-robots-ursim/install-ursim.yml` | **Optional.** Universal Robots URSim (e-Series simulator) as a container, to test ur_rtde / the ROS driver / cuRobo before the real arm |
 | `nvidia-omni-asset-cache` | `nvidia-omni-asset-cache/install-asset-cache.yml` | **Not built yet** local cache of the Omniverse/Isaac assets on persistent storage |
 
 ---
@@ -142,6 +143,56 @@ For more information, see [Livestream Clients](https://docs.omniverse.nvidia.com
 
 
 > `full-isaac` is the heaviest option (full Sim + Lab + Arena + GR00T/openpi clients; Arena 0.3 is Alpha: APIs still move) and pulls many assets. Pick it when you need the **editor + training (+ benchmarking) on one workstation with one volume**; for pure headless training jobs the lighter `lab` image is faster.
+
+---
+
+## Universal Robots URSim (optional)
+
+URSim is the official Universal Robots simulator: the real controller and PolyScope in a container. Robot code talks to it exactly like to the real arm (dashboard 29999, RTDE 30004, ROS driver), so a planner or controller can be tested before it moves the real robot.
+
+**Catalog item order:** `… → nvidia-isaac-sim-lab-arena → universal-robots-ursim` (Docker and WireGuard come from the Isaac component; on its own this component installs Docker, but not WireGuard).
+
+### Parameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| `ursim_version` | `5.21` | URSim image tag. **Match the PolyScope version of the real robot** (tablet: menu → About) |
+| `ursim_robot_model` | `UR5E` | Robot model (`UR3E`, `UR5E`, `UR7E`, `UR10E`, `UR12E`, `UR16E`, `UR15`, `UR20`, `UR30`) |
+| `ursim_data_root` | `isaac-data` | Volume name or mount path; data go to `<volume>/ursim` |
+| `ursim_bind_address` | `10.8.0.1` | Host address the ports listen on. Default = WireGuard tunnel IP, so nothing is public. Use `127.0.0.1` without WireGuard (SSH tunnel) |
+| `ursim_subnet` / `ursim_ip` | `172.30.56.0/24` / `.101` | Private Docker network. Not `192.168.56.0/24` from the ROS-driver docs: that overlaps SURF's `192.168.0.0/16` |
+| `ursim_autostart` | `false` | `false` = installed but **not started at boot** (the workstation is mainly for training); start it with `sudo systemctl start ursim`. `true` = starts at every boot |
+| `ursim_auto_remote` | `true` | After every start, confirm a pending safety configuration and switch PolyScope to **Remote Control** |
+| `externalcontrol_urcap_version` | `1.0.6` | External Control URCap for the ROS driver |
+
+### Access
+
+| From | Robot address | Ports |
+|---|---|---|
+| the workstation | `172.30.56.101` (`ursim_ip`) | all |
+| a WireGuard client | `10.8.0.1` (`ursim_bind_address`) | 6080 (PolyScope in the browser), 5900 (VNC), 29999, 30001–30004 |
+
+PolyScope in the browser: `http://10.8.0.1:6080/vnc.html?autoconnect=1&resize=scale`. For the ROS driver / External Control URCap the reverse IP is the host side of the Docker network, `172.30.56.1`, port 50002.
+
+Start on demand: `sudo systemctl start ursim` (about a minute until PolyScope is up and switched to Remote), stop with `sudo systemctl stop ursim`. Smoke test (power on, brakes released, two `moveJ`s): `/opt/ursim/venv/bin/python /opt/ursim/test_rtde.py`. Logs: `docker logs -f ursim`.
+
+### Why Remote Control is switched automatically
+
+Two PolyScope states block external control, on URSim exactly as on the real arm:
+
+- **Unconfirmed safety configuration.** RTDE accepts the connection but never starts streaming (`Failed to start RTDE data synchronization`). Confirmed once, it is stored in the installation in `<volume>/ursim/programs`.
+- **Local mode.** ur_rtde refuses with `Please enable remote control on the robot!`. Remote Control is enabled in the settings (seeded into `<volume>/ursim/polyscope`), but PolyScope **always boots in Local**, and there is no API to switch.
+
+`ursim-ready.sh` (run by `ursim.service` after every start) therefore clicks both through VNC. Switch back to Local in PolyScope (top right) to run programs from the screen yourself. URSim uses UR's default safety limits, not those of your cell.
+
+### Storage
+
+| Where | Container path | Why |
+|---|---|---|
+| `<volume>/ursim/programs` | `/ursim/programs` | programs + installation (incl. the confirmed safety configuration) |
+| `<volume>/ursim/polyscope` | `/ursim/.polyscope` | PolyScope settings (Remote Control enabled, welcome screen off) |
+| `<volume>/ursim/urcaps` | `/urcaps` | External Control URCap, installed at start |
+| `/opt/ursim` (boot disk) | — | compose file, helper scripts, venv with ur_rtde + vncdotool; recreated by the component |
 
 ---
 

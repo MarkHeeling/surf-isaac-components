@@ -1,0 +1,34 @@
+"""Smoke test: ur_rtde against URSim. Usage: venv/bin/python test_rtde.py [robot_ip]
+Managed by the universal-robots-ursim SURF component."""
+import sys, time
+from rtde_control import RTDEControlInterface
+from rtde_receive import RTDEReceiveInterface
+from dashboard_client import DashboardClient
+
+ip = sys.argv[1] if len(sys.argv) > 1 else "{{ ursim_ip }}"
+
+db = DashboardClient(ip); db.connect()
+print("PolyScope :", db.polyscopeVersion())
+print("Remote    :", db.isInRemoteControl())
+db.closeSafetyPopup()
+db.powerOn(); time.sleep(1); db.brakeRelease()
+for _ in range(60):
+    if "RUNNING" in db.robotmode():
+        break
+    time.sleep(1)
+print("Robot mode:", db.robotmode())
+
+rr = RTDEReceiveInterface(ip)
+rc = RTDEControlInterface(ip)
+home = [0.0, -1.57, 1.57, -1.57, -1.57, 0.0]
+target = [home[0] + 0.3] + home[1:]
+rc.moveJ(home, 1.0, 1.0)
+rc.moveJ(target, 1.0, 1.0)
+q = rr.getActualQ()
+err = max(abs(a - b) for a, b in zip(q, target))
+print("q         :", [round(x, 3) for x in q], f"(max error {err:.4f} rad)")
+print("TCP pose  :", [round(x, 4) for x in rr.getActualTCPPose()])
+rc.moveJ(home, 1.0, 1.0)
+rc.stopScript()
+print("OK" if err < 1e-2 else "FAIL: target not reached")
+sys.exit(0 if err < 1e-2 else 1)
