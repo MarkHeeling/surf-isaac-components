@@ -2,9 +2,11 @@
 """Print the newest version tag of an NGC image, e.g. nvidia/isaac-sim -> 6.1.0.
 
 Used by install-isaac.yml when isaac_sim_version / isaac_lab_version is "latest".
-Only tags that look like a version count (6.1.0, 3.0.0-rc1); "latest" and other
-names are ignored. Without --prerelease only releases count (6.1.0, not 6.2.0-rc1).
+Only tags that look like a version count (6.1.0, 6.2.0.1, 3.0.0-rc1); "latest" and
+other names are ignored. Without --prerelease only releases count (6.1.0, not 6.2.0-rc1).
 At an equal version number a release beats rc, rc beats beta, beta beats dev.
+The old year-numbered tags (2022.2.1 and earlier, before Isaac Sim 4.0) are ignored:
+as numbers they look newer than 6.x, but they are years older.
 
   NGC_API_KEY=... ngc_latest_tag.py nvidia/isaac-sim [--prerelease]
 """
@@ -17,21 +19,25 @@ import urllib.parse
 import urllib.request
 
 REGISTRY = "https://nvcr.io"
-VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:-(dev|alpha|beta|rc)(\d*))?$")
+VERSION = re.compile(r"^(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?(?:-(dev|alpha|beta|rc)(\d*))?$")
 RANK = {"dev": 0, "alpha": 1, "beta": 2, "rc": 3, None: 9}
+# Isaac Sim used year numbers (2020.1 ... 2022.2.1) before it switched to 4.0.0.
+FIRST_YEAR_VERSION = 2000
 
 
 def version_key(tag):
     m = VERSION.match(tag)
     if not m:
         return None
-    major, minor, patch, pre, num = m.groups()
-    return (int(major), int(minor), int(patch), RANK[pre], int(num or 0))
+    major, minor, patch, hotfix, pre, num = m.groups()
+    if int(major) >= FIRST_YEAR_VERSION:
+        return None
+    return (int(major), int(minor), int(patch), int(hotfix or 0), RANK[pre], int(num or 0))
 
 
 def newest(tags, prerelease=False):
     keyed = [(version_key(t), t) for t in tags]
-    keyed = [(k, t) for k, t in keyed if k is not None and (prerelease or k[3] == RANK[None])]
+    keyed = [(k, t) for k, t in keyed if k is not None and (prerelease or k[4] == RANK[None])]
     if not keyed:
         return None
     return max(keyed)[1]

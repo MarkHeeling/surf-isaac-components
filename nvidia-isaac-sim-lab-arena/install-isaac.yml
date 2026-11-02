@@ -457,6 +457,26 @@
       ansible.builtin.command: "docker pull {{ isaac_image }}"
       when: not (isaac_variant == 'full-isaac' and image_full | length == 0)
 
+    # The sim unit starts ./runheadless.sh. Images before Isaac Sim 4.0 (2022.x) do not
+    # have it, and the service would restart forever without a clear message.
+    - name: Check that the sim image has runheadless.sh
+      ansible.builtin.command: >-
+        docker run --rm --entrypoint test {{ isaac_image }} -x /isaac-sim/runheadless.sh
+      register: runheadless_check
+      changed_when: false
+      failed_when: false
+      when: isaac_variant == 'sim'
+
+    - name: Stop when the sim image cannot stream
+      ansible.builtin.fail:
+        msg: >-
+          {{ isaac_image }} has no /isaac-sim/runheadless.sh, so the WebRTC stream cannot
+          start. Use Isaac Sim 4.0 or newer: leave image_sim empty (or "latest") and
+          isaac_sim_version on "latest", or set a version such as "6.2.0.1".
+      when:
+        - isaac_variant == 'sim'
+        - runheadless_check.rc | default(0) != 0
+
     # Record which digest the tag resolved to, so a tag-pinned default can be turned
     # into a digest pin (paste it into image_sim / image_lab) and so a rebuild can be
     # compared against the previous deploy.
