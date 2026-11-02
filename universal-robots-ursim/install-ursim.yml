@@ -36,6 +36,10 @@
     # to Remote Control (via VNC clicks; there is no API for it).
     ursim_auto_remote: true
 
+    # false (default) = installed but not started at boot: start it when needed with
+    # `sudo systemctl start ursim`. true = starts at every boot.
+    ursim_autostart: false
+
     externalcontrol_urcap_version: "1.0.6"
     ursim_tools_dir: "/opt/ursim"      # compose file, helper scripts, Python venv (ur_rtde)
     workspace_user: "{{ ansible_user_id }}"
@@ -169,16 +173,25 @@
         mode: "0644"
       register: ursim_unit
 
-    - name: Enable + (re)start ursim.service
+    - name: Enable + (re)start ursim.service (autostart)
       ansible.builtin.systemd:
         name: ursim.service
         enabled: true
         daemon_reload: true
         state: "{{ 'restarted' if (ursim_unit.changed or ursim_compose.changed or ursim_pull.changed) else 'started' }}"
+      when: ursim_autostart | bool
+
+    - name: Install ursim.service without starting it (on demand)
+      ansible.builtin.systemd:
+        name: ursim.service
+        enabled: false
+        daemon_reload: true
+      when: not (ursim_autostart | bool)
 
     - name: How to reach URSim
       ansible.builtin.debug:
         msg:
+          - "{{ 'Starts at boot.' if (ursim_autostart | bool) else 'On demand: sudo systemctl start ursim (stop: sudo systemctl stop ursim)' }}"
           - "PolyScope (browser): http://{{ ursim_bind_address }}:6080/vnc.html?autoconnect=1&resize=scale"
           - "robot_ip on the workstation: {{ ursim_ip }} (reverse IP for the ROS driver: {{ ursim_host_ip }})"
           - "Smoke test: {{ ursim_tools_dir }}/venv/bin/python {{ ursim_tools_dir }}/test_rtde.py"

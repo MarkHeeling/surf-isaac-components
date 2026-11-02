@@ -8,6 +8,8 @@ Dates are when the change landed in the repo.
 
 - `universal-robots-ursim/install-ursim.yml` runs URSim (e-Series, default 5.21 / UR5e) as a
   container under `ursim.service`, ports only on the WireGuard IP (`ursim_bind_address`).
+- Not started at boot by default (`ursim_autostart: false`): the workstation is mainly for
+  training, so URSim runs on demand with `sudo systemctl start ursim`.
 - Data (programs, installation, PolyScope settings, URCap) on the volume in `<volume>/ursim`;
   tools (compose file, `ursim-ready.sh`, `test_rtde.py`, venv with ur_rtde) in `/opt/ursim`.
 - `ursim-ready.sh` confirms a pending safety configuration and switches PolyScope to Remote

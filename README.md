@@ -160,6 +160,7 @@ URSim is the official Universal Robots simulator: the real controller and PolySc
 | `ursim_data_root` | `isaac-data` | Volume name or mount path; data go to `<volume>/ursim` |
 | `ursim_bind_address` | `10.8.0.1` | Host address the ports listen on. Default = WireGuard tunnel IP, so nothing is public. Use `127.0.0.1` without WireGuard (SSH tunnel) |
 | `ursim_subnet` / `ursim_ip` | `172.30.56.0/24` / `.101` | Private Docker network. Not `192.168.56.0/24` from the ROS-driver docs: that overlaps SURF's `192.168.0.0/16` |
+| `ursim_autostart` | `false` | `false` = installed but **not started at boot** (the workstation is mainly for training); start it with `sudo systemctl start ursim`. `true` = starts at every boot |
 | `ursim_auto_remote` | `true` | After every start, confirm a pending safety configuration and switch PolyScope to **Remote Control** |
 | `externalcontrol_urcap_version` | `1.0.6` | External Control URCap for the ROS driver |
 
@@ -172,7 +173,7 @@ URSim is the official Universal Robots simulator: the real controller and PolySc
 
 PolyScope in the browser: `http://10.8.0.1:6080/vnc.html?autoconnect=1&resize=scale`. For the ROS driver / External Control URCap the reverse IP is the host side of the Docker network, `172.30.56.1`, port 50002.
 
-Smoke test (power on, brakes released, two `moveJ`s): `/opt/ursim/venv/bin/python /opt/ursim/test_rtde.py`. Service: `sudo systemctl status|restart ursim`, logs: `docker logs -f ursim`.
+Start on demand: `sudo systemctl start ursim` (about a minute until PolyScope is up and switched to Remote), stop with `sudo systemctl stop ursim`. Smoke test (power on, brakes released, two `moveJ`s): `/opt/ursim/venv/bin/python /opt/ursim/test_rtde.py`. Logs: `docker logs -f ursim`.
 
 ### Why Remote Control is switched automatically
 
