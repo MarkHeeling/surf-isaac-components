@@ -4,6 +4,13 @@ Notable changes to the `nvidia-isaac-sim-lab-arena` SURF Research Cloud componen
 Images are pinned by digest, so a "version" is the pinned image plus this history.
 Dates are when the change landed in the repo.
 
+## 2026-11-02 — Isaac does not start at boot by default
+
+- New parameter `isaac_autostart` (default `false`). The unit and image are installed
+  as before, but `isaac.service` is not enabled or started, so the GPU stays free for
+  training. Start it when needed: `sudo systemctl start isaac` (stop: `sudo systemctl stop isaac`).
+  `isaac_autostart: true` gives the old behaviour (enabled at boot and started now).
+
 ## 2026-11-02 — "latest" picked Isaac Sim 2022.2.1
 
 - **Bug:** with `isaac_sim_version: latest` the playbook pulled `isaac-sim:2022.2.1`.
