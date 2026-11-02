@@ -37,6 +37,7 @@ SURF Research Cloud **components** (Ansible playbooks) for Isaac Sim / Lab / Are
 | `isaac_data_root` | `isaac-data` | The **persistent data volume** (survives a rebuild): its **name** (`isaac-data`) or its mount path (`/data/isaac-data`). SURF mounts a volume at `/data/<volume-name>`, so a name gets `/data/` in front. The playbook stops when the directory does not exist and warns when it is not a separate mount |
 | `scratch_root` | `/mnt/scratch` | Mount point of the **ephemeral scratch disk** (fast local NVMe, auto-added on GPU flavours, **wiped on reboot**). Holds the regenerable Omniverse/Kit caches; the unit recreates the dirs at each start |
 | `isaacsim_host` | `127.0.0.1` | Address the streaming client connects to. `127.0.0.1` only works locally — for remote streaming set it to a reachable address: easiest is SURF's **Resource** source type with value `workspace_fqdn` (auto-fills the workspace DNS name). With `wireguard_enabled` it is ignored: the stream is advertised on the tunnel IP (`wireguard_address`) |
+| `isaac_autostart` | `false` | Start the container at boot. `false` = installed but stopped, so the GPU stays free for training; start it when needed with `sudo systemctl start isaac` (stop: `sudo systemctl stop isaac`). `true` = enabled and started |
 | `isaac_signal_port` | `49100` | WebRTC **signaling** (TCP) — establishes the connection between client and workstation |
 | `isaac_stream_port` | `47998` | WebRTC **media** (UDP) — carries the video stream itself |
 | `manage_nvidia_driver` | `true` | Installs and pins the NVIDIA driver to the version recommended by NVIDIA. `false` = leave the CUDA component's driver as-is |
@@ -74,7 +75,7 @@ The unit starts the container with `--gpus all`, so every GPU on the flavour is 
 
 **Catalog item order:** `… → CUDA component → this component`
 
-> **First boot:** the CUDA component installs a newer driver, so this component replaces it with R580 (open kernel modules). The new driver only loads after a reboot — SURF does not reboot automatically. After the first provisioning, `nvidia-smi` reports a "Driver/library version mismatch"; reboot the workspace once (`sudo systemctl reboot -i`) and `isaac.service` comes up on its own.
+> **First boot:** the CUDA component installs a newer driver, so this component replaces it with R580 (open kernel modules). The new driver only loads after a reboot — SURF does not reboot automatically. After the first provisioning, `nvidia-smi` reports a "Driver/library version mismatch"; reboot the workspace once (`sudo systemctl reboot -i`). With `isaac_autostart: true` `isaac.service` then comes up on its own; otherwise start it with `sudo systemctl start isaac`.
 
 ### Storage layout (lab)
 Following the [Isaac Lab Docker volumes](https://isaac-sim.github.io/IsaacLab/main/source/deployment/docker.html#understanding-the-mounted-volumes), storage is split by what is worth keeping. The container runs as a non-root uid (`isaac_uid`) that owns these dirs, because the image runs as root but SURF's external volume squashes root.

@@ -71,6 +71,11 @@
     isaac_signal_port: 49100
     isaac_stream_port: 47998
 
+    # Start the container at every boot? Off by default: the GPU stays free for training
+    # jobs, and Isaac Sim / Lab starts only when you ask: sudo systemctl start isaac
+    # The unit and image are always installed. true = enabled + started now.
+    isaac_autostart: false
+
     # --- WireGuard (optional) ---------------------------------------------------
     # Installs a WireGuard server on the workstation so the WebRTC viewer is reached
     # over the tunnel instead of public ports: open only wireguard_port/UDP in the
@@ -664,9 +669,9 @@
         dest: /etc/systemd/system/isaac.service
         mode: "0644"
 
-    - name: Enable + start isaac.service
+    - name: Enable + start isaac.service (isaac_autostart), otherwise install it stopped
       ansible.builtin.systemd:
         name: isaac.service
-        enabled: true
-        state: started
+        enabled: "{{ isaac_autostart | bool }}"
+        state: "{{ 'started' if isaac_autostart | bool else 'stopped' }}"
         daemon_reload: true
