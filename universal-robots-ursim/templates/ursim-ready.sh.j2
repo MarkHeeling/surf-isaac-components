@@ -7,32 +7,27 @@ IP={{ ursim_ip }}
 VENV={{ ursim_tools_dir }}/venv
 V="$VENV/bin/vncdo -s $IP::5900"
 dash() { echo "$1" | timeout 3 nc -q1 $IP 29999 2>/dev/null | tail -1; }
-# The first click after a VNC connect is often lost, so every action starts with a warm-up click.
-click() { $V move 600 400 pause 0.5 click 1 pause 1 "$@"; }
+# The first click after a VNC connect is often lost, so every action starts with a warm-up
+# click on an empty part of the top bar.
+click() { $V move 480 30 pause 0.5 click 1 pause 1 "$@"; }
 
-# RTDE only streams data once the safety configuration is confirmed.
+# Until the safety configuration is confirmed, the controller tells every RTDE client
+# "SafetySetup has not been confirmed yet" and ur_rtde cannot start (data sync timeout).
 rtde_ok() {
   "$VENV/bin/python" -I - "$IP" <<'PY'
-import socket, struct, sys, time
+import socket, struct, sys
 s = socket.create_connection((sys.argv[1], 30004), timeout=3)
-def send(t, p=b""): s.sendall(struct.pack(">HB", 3 + len(p), t) + p)
-def recv():
-    h = b""
-    while len(h) < 3: h += s.recv(3 - len(h))
-    n, t = struct.unpack(">HB", h); d = b""
-    while len(d) < n - 3: d += s.recv(n - 3 - len(d))
-    return chr(t), d
-send(ord("V"), struct.pack(">H", 2)); recv()
-send(ord("O"), struct.pack(">d", 10.0) + b"timestamp")
-send(ord("S"))
-end = time.time() + 4
+s.sendall(struct.pack(">HBH", 5, ord("V"), 2))
+buf = b""
 try:
-    while time.time() < end:
-        t, _ = recv()
-        if t == "U": sys.exit(0)
-except Exception:
+    while True:
+        chunk = s.recv(4096)
+        if not chunk:
+            break
+        buf += chunk
+except socket.timeout:
     pass
-sys.exit(1)
+sys.exit(1 if b"has not been confirmed" in buf else 0)
 PY
 }
 
@@ -48,9 +43,10 @@ rtde_ok || echo "URSim: RTDE still not streaming (confirm the safety configurati
 
 for try in 1 2 3 4 5; do
   if [ "$(dash 'is in remote control')" = "true" ]; then echo "URSim: Remote Control active"; exit 0; fi
-  # Top-right Local icon opens the menu; "Remote Control" is the item below it.
-  click move 1110 25 pause 0.5 move 1117 32 pause 0.5 click 1 pause 1.5 \
-        move 1040 80 pause 0.5 move 1054 88 pause 0.5 click 1 pause 3
+  # Top-right Local icon opens the menu; "Remote Control" is the item below it. The menu
+  # only takes a click after a few seconds, so the item is clicked in a second session.
+  click move 1110 25 pause 0.5 move 1117 32 pause 0.5 click 1 pause 3
+  $V move 1040 80 pause 0.5 move 1054 88 pause 0.5 click 1 pause 3
 done
 echo "URSim: could not switch to Remote Control (do it in PolyScope, top right)"
 exit 1

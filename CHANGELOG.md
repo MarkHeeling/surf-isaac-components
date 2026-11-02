@@ -12,8 +12,9 @@ Dates are when the change landed in the repo.
   tools (compose file, `ursim-ready.sh`, `test_rtde.py`, venv with ur_rtde) in `/opt/ursim`.
 - `ursim-ready.sh` confirms a pending safety configuration and switches PolyScope to Remote
   Control after every start; without both, ur_rtde and the ROS driver are refused.
-- Validated by hand on the RTX 6000 workstation (ur_rtde smoke test passes, also after a
-  restart of the service).
+- Validated on the RTX 6000 workstation: on a fresh volume (safety confirmation and Remote
+  switch done by the script, ur_rtde smoke test passes) and on an existing one; a second
+  run reports no changes.
 
 ## 2026-10-29 — Stream on the tunnel IP
 
