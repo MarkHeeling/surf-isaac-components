@@ -17,6 +17,28 @@ Dates are when the change landed in the repo.
 - Validated on the RTX 6000 workstation: on a fresh volume (safety confirmation and Remote
   switch done by the script, ur_rtde smoke test passes) and on an existing one; a second
   run reports no changes.
+## 2026-11-02 — Isaac does not start at boot by default
+
+- New parameter `isaac_autostart` (default `false`). The unit and image are installed
+  as before, but `isaac.service` is not enabled or started, so the GPU stays free for
+  training. Start it when needed: `sudo systemctl start isaac` (stop: `sudo systemctl stop isaac`).
+  `isaac_autostart: true` gives the old behaviour (enabled at boot and started now).
+
+## 2026-11-02 — "latest" picked Isaac Sim 2022.2.1
+
+- **Bug:** with `isaac_sim_version: latest` the playbook pulled `isaac-sim:2022.2.1`.
+  `files/ngc_latest_tag.py` compared tags as numbers, so the old year-numbered tags
+  (2020.1 ... 2022.2.1, before Isaac Sim 4.0) looked newer than 6.x. That image has no
+  `runheadless.sh`, so `isaac.service` restarted forever and the WebRTC client could not
+  connect. The four-part hotfix tag `6.2.0.1` was also skipped.
+- Year-numbered tags are now ignored and a fourth (hotfix) number counts:
+  `latest` gives `6.2.0.1` for Isaac Sim and `3.0.0` for Isaac Lab (checked against
+  nvcr.io on 2026-11-02). Tests in `nvidia-isaac-sim-lab-arena/tests/`.
+- For `sim`, the playbook now checks after the pull that the image has
+  `/isaac-sim/runheadless.sh` and stops with a clear message if it does not.
+- Fix on an existing workstation: replace the image in `/etc/systemd/system/isaac.service`
+  with `nvcr.io/nvidia/isaac-sim:6.2.0.1`, then `systemctl daemon-reload` and
+  `systemctl restart isaac`.
 
 ## 2026-10-29 — Stream on the tunnel IP
 
