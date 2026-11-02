@@ -1,0 +1,184 @@
+# SURF Research Cloud component — Universal Robots URSim (e-Series simulator)
+#
+# Runs URSim (PolyScope + controller) as a Docker container, so robot code
+# (ur_rtde, the ROS driver, cuRobo) can be tested before it drives the real arm.
+# Optional: add it to a catalog item after nvidia-isaac-sim-lab-arena (which
+# provides Docker and WireGuard), or on its own (it installs Docker if missing).
+---
+- name: Universal Robots URSim (e-Series) simulator
+  hosts: localhost
+  connection: local
+  become: true
+
+  vars:
+    # Match the PolyScope version of the real robot (tablet: menu -> About).
+    ursim_version: "5.21"
+    ursim_robot_model: "UR5E"          # UR3E, UR5E, UR7E, UR10E, UR12E, UR16E, UR15, UR20, UR30
+
+    # Persistent data volume (name or mount path, same rule as isaac_data_root).
+    # Programs, the installation (incl. the confirmed safety config) and PolyScope
+    # settings live in <volume>/ursim and survive a rebuild.
+    ursim_data_root: "isaac-data"
+
+    # Host address the published ports listen on. Default = the WireGuard tunnel IP,
+    # so PolyScope/RTDE are never on the public interface. Use 127.0.0.1 without
+    # WireGuard (then reach it with an SSH tunnel).
+    ursim_bind_address: "10.8.0.1"
+
+    # Private Docker network. From the workstation the robot is at ursim_ip; the host
+    # is the .1 of the subnet (= reverse IP for the External Control URCap / ROS driver).
+    # Not 192.168.56.0/24 (the ROS-driver docs default): it overlaps SURF's 192.168.0.0/16.
+    ursim_subnet: "172.30.56.0/24"
+    ursim_ip: "172.30.56.101"
+
+    # PolyScope boots in Local mode, which rejects ur_rtde / ROS-driver commands.
+    # true = after every start, confirm a pending safety configuration and switch
+    # to Remote Control (via VNC clicks; there is no API for it).
+    ursim_auto_remote: true
+
+    externalcontrol_urcap_version: "1.0.6"
+    ursim_tools_dir: "/opt/ursim"      # compose file, helper scripts, Python venv (ur_rtde)
+    workspace_user: "{{ ansible_user_id }}"
+
+  tasks:
+    # ------------------------------------------------------------ 1. Data directory
+    - name: Data directory from the volume name or path
+      ansible.builtin.set_fact:
+        ursim_data_dir: >-
+          {%- set r = (ursim_data_root | string | trim | regex_replace('/+$', '')) -%}
+          {{ (r if r.startswith('/') else '/data/' ~ r) ~ '/ursim' }}
+        ursim_volume_dir: >-
+          {%- set r = (ursim_data_root | string | trim | regex_replace('/+$', '')) -%}
+          {{ r if r.startswith('/') else '/data/' ~ r }}
+        ursim_image: "universalrobots/ursim_e-series:{{ ursim_version | string | trim }}"
+        ursim_host_ip: "{{ ursim_subnet | regex_replace('\\.\\d+/\\d+$', '.1') }}"
+
+    - name: Check that the volume is mounted
+      ansible.builtin.command: "mountpoint -q {{ ursim_volume_dir }}"
+      register: ursim_volume_mounted
+      changed_when: false
+      failed_when: false
+
+    - name: Warn when the data directory is not on a separate volume
+      ansible.builtin.debug:
+        msg: >-
+          WARNING: {{ ursim_volume_dir }} is not a mount point, so URSim programs and
+          settings land on the boot disk and are lost with the workspace.
+      when: ursim_volume_mounted.rc != 0
+
+    # Owned by root: the container writes as root. 0777 keeps it writable if the
+    # volume squashes root.
+    - name: Persistent URSim directories
+      ansible.builtin.file:
+        path: "{{ ursim_data_dir }}/{{ item }}"
+        state: directory
+        mode: "0777"
+      loop: [programs, urcaps, polyscope]
+
+    # Seeded once (force: false), so later changes in PolyScope are kept.
+    - name: Enable Remote Control in PolyScope (first run only)
+      ansible.builtin.copy:
+        dest: "{{ ursim_data_dir }}/polyscope/remotecontrol.properties"
+        content: "RemoteControlEnabled=true\n"
+        force: false
+        mode: "0666"
+
+    - name: Skip the PolyScope welcome screen (first run only)
+      ansible.builtin.copy:
+        dest: "{{ ursim_data_dir }}/polyscope/welcome.properties"
+        content: "showWelcomeScreen=false\n"
+        force: false
+        mode: "0666"
+
+    - name: External Control URCap (for the ROS driver)
+      ansible.builtin.get_url:
+        url: "https://github.com/UniversalRobots/Universal_Robots_ExternalControl_URCap/releases/download/v{{ externalcontrol_urcap_version }}/externalcontrol-{{ externalcontrol_urcap_version }}.jar"
+        dest: "{{ ursim_data_dir }}/urcaps/externalcontrol-{{ externalcontrol_urcap_version }}.jar"
+        mode: "0644"
+
+    # ------------------------------------------------------------ 2. Docker
+    - name: Is Docker installed?
+      ansible.builtin.command: docker --version
+      register: docker_present
+      changed_when: false
+      failed_when: false
+
+    - name: Install Docker CE (when another component has not done so)
+      when: docker_present.rc != 0
+      block:
+        - name: Keyrings directory
+          ansible.builtin.file: { path: /etc/apt/keyrings, state: directory, mode: "0755" }
+        - name: Docker GPG key
+          ansible.builtin.get_url:
+            url: https://download.docker.com/linux/ubuntu/gpg
+            dest: /etc/apt/keyrings/docker.asc
+            mode: "0644"
+        - name: Docker apt repo
+          ansible.builtin.apt_repository:
+            repo: "deb [arch=amd64 signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu {{ ansible_distribution_release }} stable"
+            filename: docker
+        - name: Install Docker CE + compose plugin
+          ansible.builtin.apt:
+            name: [docker-ce, docker-ce-cli, containerd.io, docker-compose-plugin]
+            update_cache: true
+
+    - name: Docker enabled + started
+      ansible.builtin.systemd: { name: docker, enabled: true, state: started }
+
+    - name: Add workspace user to the docker group
+      ansible.builtin.user: { name: "{{ workspace_user }}", groups: docker, append: true }
+
+    - name: Pull the URSim image
+      ansible.builtin.command: "docker pull {{ ursim_image }}"
+      register: ursim_pull
+      changed_when: "'Downloaded newer image' in ursim_pull.stdout"
+
+    # ------------------------------------------------------------ 3. Tools
+    - name: Packages for the helper scripts
+      ansible.builtin.apt:
+        name: [python3-venv, netcat-openbsd]
+
+    - name: Tools directory
+      ansible.builtin.file: { path: "{{ ursim_tools_dir }}", state: directory, mode: "0755" }
+
+    - name: Python venv with ur_rtde (smoke test) and vncdotool (Remote switch)
+      ansible.builtin.pip:
+        name: [ur_rtde, vncdotool]
+        virtualenv: "{{ ursim_tools_dir }}/venv"
+        virtualenv_command: python3 -m venv
+
+    - name: Compose file
+      ansible.builtin.template:
+        src: templates/compose.yaml.j2
+        dest: "{{ ursim_tools_dir }}/compose.yaml"
+        mode: "0644"
+      register: ursim_compose
+
+    - name: Helper scripts
+      ansible.builtin.template:
+        src: "templates/{{ item }}.j2"
+        dest: "{{ ursim_tools_dir }}/{{ item }}"
+        mode: "0755"
+      loop: [ursim-ready.sh, test_rtde.py]
+
+    # ------------------------------------------------------------ 4. systemd unit
+    - name: Install the URSim systemd unit
+      ansible.builtin.template:
+        src: templates/ursim.service.j2
+        dest: /etc/systemd/system/ursim.service
+        mode: "0644"
+      register: ursim_unit
+
+    - name: Enable + (re)start ursim.service
+      ansible.builtin.systemd:
+        name: ursim.service
+        enabled: true
+        daemon_reload: true
+        state: "{{ 'restarted' if (ursim_unit.changed or ursim_compose.changed or ursim_pull.changed) else 'started' }}"
+
+    - name: How to reach URSim
+      ansible.builtin.debug:
+        msg:
+          - "PolyScope (browser): http://{{ ursim_bind_address }}:6080/vnc.html?autoconnect=1&resize=scale"
+          - "robot_ip on the workstation: {{ ursim_ip }} (reverse IP for the ROS driver: {{ ursim_host_ip }})"
+          - "Smoke test: {{ ursim_tools_dir }}/venv/bin/python {{ ursim_tools_dir }}/test_rtde.py"

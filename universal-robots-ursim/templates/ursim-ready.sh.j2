@@ -1,0 +1,56 @@
+#!/bin/bash
+# Managed by the universal-robots-ursim SURF component.
+# After URSim starts: confirm a pending safety configuration and switch PolyScope to
+# Remote Control, so ur_rtde / the ROS driver are accepted. PolyScope has no API for
+# either, so this clicks through VNC (screen 1280x800).
+IP={{ ursim_ip }}
+VENV={{ ursim_tools_dir }}/venv
+V="$VENV/bin/vncdo -s $IP::5900"
+dash() { echo "$1" | timeout 3 nc -q1 $IP 29999 2>/dev/null | tail -1; }
+# The first click after a VNC connect is often lost, so every action starts with a warm-up click.
+click() { $V move 600 400 pause 0.5 click 1 pause 1 "$@"; }
+
+# RTDE only streams data once the safety configuration is confirmed.
+rtde_ok() {
+  "$VENV/bin/python" -I - "$IP" <<'PY'
+import socket, struct, sys, time
+s = socket.create_connection((sys.argv[1], 30004), timeout=3)
+def send(t, p=b""): s.sendall(struct.pack(">HB", 3 + len(p), t) + p)
+def recv():
+    h = b""
+    while len(h) < 3: h += s.recv(3 - len(h))
+    n, t = struct.unpack(">HB", h); d = b""
+    while len(d) < n - 3: d += s.recv(n - 3 - len(d))
+    return chr(t), d
+send(ord("V"), struct.pack(">H", 2)); recv()
+send(ord("O"), struct.pack(">d", 10.0) + b"timestamp")
+send(ord("S"))
+end = time.time() + 4
+try:
+    while time.time() < end:
+        t, _ = recv()
+        if t == "U": sys.exit(0)
+except Exception:
+    pass
+sys.exit(1)
+PY
+}
+
+for i in $(seq 1 60); do dash PolyscopeVersion | grep -q URSoftware && break; sleep 5; done
+sleep 10
+
+for try in 1 2 3; do
+  rtde_ok && break
+  echo "URSim: confirming the safety configuration"
+  click move 620 670 pause 0.5 move 639 681 pause 0.5 click 1 pause 4
+done
+rtde_ok || echo "URSim: RTDE still not streaming (confirm the safety configuration in PolyScope)"
+
+for try in 1 2 3 4 5; do
+  if [ "$(dash 'is in remote control')" = "true" ]; then echo "URSim: Remote Control active"; exit 0; fi
+  # Top-right Local icon opens the menu; "Remote Control" is the item below it.
+  click move 1110 25 pause 0.5 move 1117 32 pause 0.5 click 1 pause 1.5 \
+        move 1040 80 pause 0.5 move 1054 88 pause 0.5 click 1 pause 3
+done
+echo "URSim: could not switch to Remote Control (do it in PolyScope, top right)"
+exit 1

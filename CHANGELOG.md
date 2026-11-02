@@ -4,6 +4,17 @@ Notable changes to the `nvidia-isaac-sim-lab-arena` SURF Research Cloud componen
 Images are pinned by digest, so a "version" is the pinned image plus this history.
 Dates are when the change landed in the repo.
 
+## 2026-11-02 — New optional component: universal-robots-ursim
+
+- `universal-robots-ursim/install-ursim.yml` runs URSim (e-Series, default 5.21 / UR5e) as a
+  container under `ursim.service`, ports only on the WireGuard IP (`ursim_bind_address`).
+- Data (programs, installation, PolyScope settings, URCap) on the volume in `<volume>/ursim`;
+  tools (compose file, `ursim-ready.sh`, `test_rtde.py`, venv with ur_rtde) in `/opt/ursim`.
+- `ursim-ready.sh` confirms a pending safety configuration and switches PolyScope to Remote
+  Control after every start; without both, ur_rtde and the ROS driver are refused.
+- Validated by hand on the RTX 6000 workstation (ur_rtde smoke test passes, also after a
+  restart of the service).
+
 ## 2026-10-29 — Stream on the tunnel IP
 
 - With WireGuard on, the stream was still advertised on the catalog value of
