@@ -1,0 +1,12 @@
+#!/bin/sh
+# Managed by the paradaim-planserver SURF component.
+# planserver health | worlds | plan --world <id> --goal <n> [...]: ask the plan
+# server on this workspace (scripts/planserver.py of the planner; --help lists all).
+cmd="$1"
+[ -n "$cmd" ] || { echo "usage: planserver health | worlds | plan ... | pull ..." >&2; exit 2; }
+shift
+case "$cmd" in
+  serve) echo "the server runs as a service: sudo systemctl start planserver" >&2; exit 2 ;;
+esac
+cd {{ ps_planner_dir }} || exit 1
+exec {{ ps_venv }}/bin/python scripts/planserver.py "$cmd" --url "http://{{ '127.0.0.1' if planserver_bind_address == '0.0.0.0' else planserver_bind_address }}:{{ planserver_port }}" "$@"

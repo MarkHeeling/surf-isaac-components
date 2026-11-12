@@ -1,0 +1,33 @@
+# Managed by the paradaim-planserver SURF component.
+[Unit]
+Description=Paradaim plan server ({{ ps_mode }}) on {{ planserver_bind_address }}:{{ planserver_port }}
+Wants=network-online.target{{ ' wg-quick@wg0.service' if ps_on_wireguard else '' }}
+After=network-online.target{{ ' wg-quick@wg0.service' if ps_on_wireguard else '' }}
+
+[Service]
+Type=simple
+User={{ planserver_user }}
+WorkingDirectory={{ ps_planner_dir }}
+Environment=PYTHONUNBUFFERED=1
+Environment=HOME={{ planserver_dir }}
+ExecStart={{ ps_venv }}/bin/python scripts/planserver.py serve \
+    --host {{ planserver_bind_address }} --port {{ planserver_port }}
+{%- if ps_blocks | length > 0 %} \
+    --blocks {{ ps_blocks | join(' ') }}
+{%- endif %}
+{%- if ps_checkpoint | length > 0 %} \
+    --checkpoint {{ ps_checkpoint }} \
+    --esdf-cache-dir {{ planserver_esdf_cache }}
+{%- endif %}
+
+Restart=on-failure
+RestartSec=5
+# Reads the dataset and the checkpoint, writes only its cache.
+ProtectSystem=strict
+ReadWritePaths={{ planserver_esdf_cache }} {{ planserver_dir }}
+ProtectHome=read-only
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

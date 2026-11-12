@@ -1,14 +1,67 @@
 # surf-isaac-components
 
-SURF Research Cloud **components** (Ansible playbooks) for Isaac Sim / Lab / Arena.
+SURF Research Cloud **components** (Ansible playbooks) for Isaac Sim / Lab / Arena, and for the services around a robot cell: a WireGuard tunnel, the Universal Robots simulator and the Paradaim plan server.
 
 ## Components
 
 | Component | Path | Purpose |
 |---|---|---|
+| `wireguard` | `wireguard/install-wireguard.yml` | WireGuard server on the workspace. The other components listen on its tunnel IP, so only one UDP port is public |
 | `nvidia-isaac-sim-lab-arena` | `nvidia-isaac-sim-lab-arena/install-isaac.yml` | Headless GPU workstation running Isaac Sim / Lab / Arena as a container, pinned by digest |
 | `universal-robots-ursim` | `universal-robots-ursim/install-ursim.yml` | **Optional.** Universal Robots URSim (e-Series simulator) as a container, to test ur_rtde / the ROS driver / cuRobo before the real arm |
+| `paradaim-planserver` | `paradaim-planserver/install-planserver.yml` | **Optional.** Plan server of the Paradaim planner: answers a laptop next to the robot with a joint trajectory (stored expert trajectories and the model on the CPU; cuRobo on a GPU is planned) |
 | `nvidia-omni-asset-cache` | `nvidia-omni-asset-cache/install-asset-cache.yml` | **Not built yet** local cache of the Omniverse/Isaac assets on persistent storage |
+
+### Catalog items
+
+A catalog item runs its components in order. `wireguard` goes first: the components after it look for the tunnel and listen on its IP.
+
+| Catalog item | Components, in order | Flavour |
+|---|---|---|
+| Isaac workstation | SURF's CUDA component → `wireguard` → `nvidia-isaac-sim-lab-arena` → `universal-robots-ursim` → `paradaim-planserver` (the last two optional) | GPU |
+| Robot test server | `wireguard` → `universal-robots-ursim` → `paradaim-planserver` (`planserver_mode=cpu`) | CPU only |
+| Plan server with cuRobo (planned) | SURF's CUDA component → `wireguard` → `universal-robots-ursim` → `paradaim-planserver` (`planserver_mode=gpu`) | 1× RTX 6000 |
+
+In the access rules of every item open only the WireGuard port (`51820/UDP`) and SSH.
+
+---
+
+## WireGuard
+
+A WireGuard server on the workspace. Everything else (Isaac's WebRTC stream, URSim, the plan server, a Foxglove WebSocket) listens on the tunnel IP `10.8.0.1`, so none of it is on the public interface.
+
+### Parameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| `wireguard_port` | `51820` | WireGuard listen port (UDP). Open only this port in the catalog access rules |
+| `wireguard_address` | `10.8.0.1/24` | Server tunnel IP + subnet. Clients get `.2`, `.3`, … in order of `wireguard_peers` |
+| `wireguard_peers` | `""` | Client **public** keys, comma/space/newline separated. `PUBKEY` or `PUBKEY@10.8.0.7` (explicit tunnel IP). Empty = tunnel up without peers |
+| `wireguard_endpoint` | `{{ ansible_fqdn }}` | Host the client connects to (written into the client example config). Set via the **Resource** source type `workspace_fqdn` |
+| `wireguard_private_key` | `""` | Optional server private key as a **collaboration secret** so the server key survives a rebuild. Empty = generated on the workspace |
+
+The component installs WireGuard, creates the server key (or uses the `wireguard_private_key` secret), writes `/etc/wireguard/wg0.conf` with one `[Peer]` per key in `wireguard_peers` and starts `wg-quick@wg0`. The playbook output and the SSH login banner show the **server public key**; a ready-to-fill client config is in `/etc/wireguard-client-example.conf`.
+
+### Client
+
+```bash
+wg genkey | tee client.key | wg pubkey      # put the public key in wireguard_peers
+```
+
+```ini
+# /etc/wireguard/wg0.conf on the client (first key in wireguard_peers -> 10.8.0.2)
+[Interface]
+PrivateKey = <contents of client.key>
+Address = 10.8.0.2/32
+
+[Peer]
+PublicKey = <server public key from the login banner>
+Endpoint = <workspace FQDN>:51820
+AllowedIPs = 10.8.0.1/32
+PersistentKeepalive = 25
+```
+
+Then `wg-quick up wg0`. To add a peer later, add its key to `wireguard_peers` and rerun the component, or ad hoc on the workspace: `sudo wg set wg0 peer <PUBKEY> allowed-ips 10.8.0.9/32` (not persisted). Without the `wireguard_private_key` secret a rebuild generates a new server key, so update `[Peer] PublicKey` on the clients afterwards.
 
 ---
 
@@ -37,7 +90,7 @@ SURF Research Cloud **components** (Ansible playbooks) for Isaac Sim / Lab / Are
 | `arena_ref` | `8737b4ce…` | full-isaac build-on-deploy: Arena git commit/tag/branch to build. Default = `release/0.3.0` tip (2026-09-15, Arena 0.3 Alpha, builds on `isaac-sim:6.0.1` + Isaac Lab 3.0); change to roll forward |
 | `isaac_data_root` | `isaac-data` | The **persistent data volume** (survives a rebuild): its **name** (`isaac-data`) or its mount path (`/data/isaac-data`). SURF mounts a volume at `/data/<volume-name>`, so a name gets `/data/` in front. The playbook stops when the directory does not exist and warns when it is not a separate mount |
 | `scratch_root` | `/mnt/scratch` | Mount point of the **ephemeral scratch disk** (fast local NVMe, auto-added on GPU flavours, **wiped on reboot**). Holds the regenerable Omniverse/Kit caches; the unit recreates the dirs at each start |
-| `isaacsim_host` | `127.0.0.1` | Address the streaming client connects to. `127.0.0.1` only works locally — for remote streaming set it to a reachable address: easiest is SURF's **Resource** source type with value `workspace_fqdn` (auto-fills the workspace DNS name). With `wireguard_enabled` it is ignored: the stream is advertised on the tunnel IP (`wireguard_address`) |
+| `isaacsim_host` | `127.0.0.1` | Address the streaming client connects to. `127.0.0.1` only works locally — for remote streaming set it to a reachable address: easiest is SURF's **Resource** source type with value `workspace_fqdn` (auto-fills the workspace DNS name). With a WireGuard tunnel on the workspace (the `wireguard` component) it is ignored: the stream is advertised on the tunnel IP |
 | `isaac_autostart` | `false` | Start the container at boot. `false` = installed but stopped, so the GPU stays free for training; start it when needed with `sudo systemctl start isaac` (stop: `sudo systemctl stop isaac`). `true` = enabled and started |
 | `isaac_signal_port` | `49100` | WebRTC **signaling** (TCP) — establishes the connection between client and workstation |
 | `isaac_stream_port` | `47998` | WebRTC **media** (UDP) — carries the video stream itself |
@@ -46,14 +99,9 @@ SURF Research Cloud **components** (Ansible playbooks) for Isaac Sim / Lab / Are
 | `nvidia_kernel_modules` | `open` | `open` installs `nvidia-open-<branch>` (NVIDIA's open kernel modules): **required for Blackwell** (RTX PRO 6000) and supported on the A10. `proprietary` = the old `cuda-drivers-<branch>` (A10 only). A driver with the other flavour is purged and replaced |
 | `nvidia_driver_pin_glob` | `580.*` | Keeps the driver on this branch (any 580.x) and blocks a jump to a newer branch (590+) |
 | `nvidia_driver_apt_version` | `""` | Optionally pin an **exact** driver version (e.g. NVIDIA's tested `580.95.05`). Empty = latest 580.x |
-| `wireguard_enabled` | `true` | Install a **WireGuard** server on the workstation so the WebRTC viewer is reached over the tunnel (no public WebRTC ports). See [Option B](#streaming-and-network-access) |
-| `wireguard_port` | `51820` | WireGuard listen port (UDP). Open only this port in the catalog access rules |
-| `wireguard_address` | `10.8.0.1/24` | Server tunnel IP + subnet. Clients get `.2`, `.3`, … in order of `wireguard_peers` |
-| `wireguard_peers` | `""` | Client **public** keys, comma/space/newline separated. `PUBKEY` or `PUBKEY@10.8.0.7` (explicit tunnel IP). Empty = tunnel up without peers |
-| `wireguard_endpoint` | `{{ ansible_fqdn }}` | Host:port the client connects to (written into the client example config). Set via the **Resource** source type `workspace_fqdn` |
-| `wireguard_private_key` | `""` | Optional server private key as a **collaboration secret** so the server key survives a rebuild. Empty = generated on the workstation |
+| `isaac_stream_over_wireguard` | `true` | When the `wireguard` component ran before this one, advertise the stream on the tunnel IP (no public WebRTC ports). `false` = always use `isaacsim_host`. Without a tunnel the value does not matter. See [Option B](#streaming-and-network-access) |
 
-**Secret:** the NGC API key is provided as the var `ngc_api_key` from a **SURF collaboration secret (Vault)**. Optionally `wireguard_private_key` the same way.
+**Secret:** the NGC API key is provided as the var `ngc_api_key` from a **SURF collaboration secret (Vault)**.
 
 **Versions (2026-09-22):** `sim` = Isaac Sim **6.1.0** GA (2026-09-10) · `lab` = Isaac Lab **3.0.0 RC1** (`v3.0.0-EA`, 2026-09-16, GA targeted end of October 2026) on Isaac Sim 6.1 · `full-isaac` = Arena **release/0.3.0** (0.3 Alpha, 2026-09-10) which still builds on `isaac-sim:6.0.1`. Isaac Lab 3.0 needs Python 3.12 and the pre-built image now runs its runtime as uid 1000 (`isaaclab`), which matches the `isaac_uid` this component already used.
 
@@ -112,30 +160,11 @@ Isaac streaming needs two ports reachable from your client:
 
 There are **two alternative ways** to make the workstation reachable. Pick one — they set `isaacsim_host` to different values and are not combined:
 
-**Option A — public ports (simplest, for testing).** Set `wireguard_enabled=false`, open `49100/TCP` and `47998/UDP` to your client IP (`/32`) in the catalog item's access rules. Set `isaacsim_host` via the **Resource** source type with value `workspace_fqdn`, so the stream advertises the workspace's public DNS name.
+**Option A — public ports (simplest, for testing).** Leave the `wireguard` component out of the catalog item (or set `isaac_stream_over_wireguard=false`), open `49100/TCP` and `47998/UDP` to your client IP (`/32`) in the catalog item's access rules. Set `isaacsim_host` via the **Resource** source type with value `workspace_fqdn`, so the stream advertises the workspace's public DNS name.
 
-**Option B — WireGuard (no public WebRTC ports, the default).** Keep `wireguard_enabled=true` and open only the WireGuard port (`51820/UDP`, `wireguard_port`) in the access rules. The component installs WireGuard, creates the server key (or uses the `wireguard_private_key` secret), writes `/etc/wireguard/wg0.conf` with one `[Peer]` per key in `wireguard_peers`, starts `wg-quick@wg0`, and advertises the tunnel IP (`wireguard_address`, default `10.8.0.1`) as `isaacsim_host` — leave `isaacsim_host` at its default. The playbook output and the SSH login banner show the **server public key**; a ready-to-fill client config is in `/etc/isaac/wireguard-client-example.conf`.
+**Option B — WireGuard (no public WebRTC ports, recommended).** Put the [`wireguard`](#wireguard) component before this one and open only the WireGuard port (`51820/UDP`) in the access rules. This component finds the tunnel and advertises its IP (default `10.8.0.1`) instead of `isaacsim_host`; leave `isaacsim_host` at its default. Bring the tunnel up on your client and point the Isaac Sim WebRTC client at `10.8.0.1`.
 
-On your client:
-
-```bash
-wg genkey | tee client.key | wg pubkey      # put the public key in wireguard_peers
-```
-
-```ini
-# /etc/wireguard/wg0.conf on the client (first key in wireguard_peers -> 10.8.0.2)
-[Interface]
-PrivateKey = <contents of client.key>
-Address = 10.8.0.2/32
-
-[Peer]
-PublicKey = <server public key from the login banner>
-Endpoint = <workspace FQDN>:51820
-AllowedIPs = 10.8.0.1/32
-PersistentKeepalive = 25
-```
-
-Then `wg-quick up wg0` and point the Isaac Sim WebRTC client at `10.8.0.1`. To add a peer later, add its key to `wireguard_peers` and rerun the component, or ad hoc on the workstation: `sudo wg set wg0 peer <PUBKEY> allowed-ips 10.8.0.9/32` (not persisted). Without the `wireguard_private_key` secret a rebuild generates a new server key, so update `[Peer] PublicKey` on the clients afterwards.
+> **Catalog items from before 2026-11-12** passed `wireguard_enabled` and the other `wireguard_*` parameters to this component, which installed WireGuard itself. Add the `wireguard` component before this one, move the `wireguard_*` parameters to it and remove `wireguard_enabled`. Keep the `wireguard_private_key` secret, so the clients do not notice the change. A workstation that is already running keeps its tunnel; the playbook only stops when `wireguard_enabled=true` is passed and no tunnel exists.
 
 > The value applied to `isaacsim_host` comes from the catalog item and is (re)applied on create/rebuild — a normal reboot keeps any manual change, a rebuild resets it to the catalog value.
 
@@ -150,7 +179,7 @@ For more information, see [Livestream Clients](https://docs.omniverse.nvidia.com
 
 URSim is the official Universal Robots simulator: the real controller and PolyScope in a container. Robot code talks to it exactly like to the real arm (dashboard 29999, RTDE 30004, ROS driver), so a planner or controller can be tested before it moves the real robot.
 
-**Catalog item order:** `… → nvidia-isaac-sim-lab-arena → universal-robots-ursim` (Docker and WireGuard come from the Isaac component; on its own this component installs Docker, but not WireGuard).
+**Catalog item order:** `wireguard → (nvidia-isaac-sim-lab-arena →) universal-robots-ursim`. The tunnel comes from the `wireguard` component; Docker from the Isaac component, or this component installs it when it is missing.
 
 ### Parameters
 
@@ -172,7 +201,7 @@ URSim is the official Universal Robots simulator: the real controller and PolySc
 | the workstation | `172.30.56.101` (`ursim_ip`) | all |
 | a WireGuard client | `10.8.0.1` (`ursim_bind_address`) | 6080 (PolyScope in the browser), 5900 (VNC), 29999, 30001–30004 |
 
-PolyScope in the browser: `http://10.8.0.1:6080/vnc.html?autoconnect=1&resize=scale`. For the ROS driver / External Control URCap the reverse IP is the host side of the Docker network, `172.30.56.1`, port 50002.
+PolyScope in the browser: `http://10.8.0.1:6080/vnc.html?autoconnect=1&resize=scale`. For the ROS driver / External Control URCap the reverse IP is the host side of the Docker network, `172.30.56.1`, port 50002. A program that runs on a WireGuard client (the UR Client Library on a laptop) gives its own tunnel IP as reverse IP (`10.8.0.2`): the controller then connects back through the tunnel to ports 50001–50004 on the client, which the client's firewall has to allow on the WireGuard interface. This path relies on Docker's default NAT from the URSim network to the tunnel and has not been tested over a real tunnel yet.
 
 Start on demand: `sudo systemctl start ursim` (about a minute until PolyScope is up and switched to Remote), stop with `sudo systemctl stop ursim`. Smoke test (power on, brakes released, two `moveJ`s): `/opt/ursim/venv/bin/python /opt/ursim/test_rtde.py`. Logs: `docker logs -f ursim`.
 
@@ -193,6 +222,52 @@ Two PolyScope states block external control, on URSim exactly as on the real arm
 | `<volume>/ursim/polyscope` | `/ursim/.polyscope` | PolyScope settings (Remote Control enabled, welcome screen off) |
 | `<volume>/ursim/urcaps` | `/urcaps` | External Control URCap, installed at start |
 | `/opt/ursim` (boot disk) | — | compose file, helper scripts, venv with ur_rtde + vncdotool; recreated by the component |
+
+---
+
+## Paradaim plan server (optional)
+
+The plan server of the [Paradaim planner](https://github.com/MarkHeeling/planner) (`scripts/planserver.py`) as a systemd service. A laptop next to the robot sends a world, a start configuration and a goal over HTTP and gets a joint trajectory back; the laptop validates it (start, limits, collision, world hash) and executes it. The server never moves anything itself, and it answers one plan at a time.
+
+**Catalog item order:** `wireguard → (universal-robots-ursim →) paradaim-planserver`.
+
+| `planserver_mode` | Planners | Needs |
+|---|---|---|
+| `cpu` (default) | `stored` (the expert trajectories of the dataset) and, with a checkpoint, `model` | no GPU |
+| `gpu` | adds `curobo` and `model_curobo` (the model's samples as seeds for cuRobo) | **not available yet**; the playbook stops with a message |
+
+A laptop that runs the model itself still uses the server for the worlds, the stored trajectories and, later, cuRobo: for `model_curobo` it sends its own samples as seeds in the request.
+
+### Parameters
+
+| Parameter | Default | Description |
+|---|---|---|
+| `planserver_mode` | `cpu` | `cpu` or `gpu` (see above) |
+| `planner_repo` / `planner_ref` | `https://github.com/MarkHeeling/planner.git` / `master` | Repository and branch, tag or commit to serve |
+| `planner_git_token` | `""` | For a private repository: a read-only GitHub token as a **collaboration secret**. Used for the clone only and not left in `.git/config` |
+| `planner_checkout` | `""` | Serve from a checkout that is already on the workspace (e.g. the one used for training) instead of cloning. The component never runs git in it |
+| `planserver_dir` | `/opt/planserver` | Clone, Python environment and uv (boot disk, about 6 GB: the planner's lockfile installs PyTorch with its CUDA libraries, also in `cpu` mode) |
+| `planserver_data_root` | `isaac-data` | Volume name or mount path; relative paths below are relative to it |
+| `planserver_blocks` | `""` | Block directories of the dataset (`problems/`, `pointclouds/`, `trajectories_s*.zarr`), comma/space separated, e.g. `v5/block_00`. Empty = the eight environments of the test fixture in the repository |
+| `planserver_checkpoint` | `""` | Model checkpoint, e.g. `planner/outputs/<run>/checkpoint.pt`. Empty = no `model`, only `stored` |
+| `planserver_esdf_cache` | `/var/cache/planserver/esdf` | Distance fields the model computes once per environment |
+| `planserver_bind_address` | `10.8.0.1` | Address the server listens on. Default = WireGuard tunnel IP. Use `127.0.0.1` without WireGuard (SSH tunnel). The playbook stops when the address is not on the workspace |
+| `planserver_port` | `8770` | HTTP port |
+| `planserver_autostart` | `true` | Start at boot (the `cpu` mode is light). `false` = installed but stopped: `sudo systemctl start planserver` |
+| `planserver_user` | `planserver` | System user the service runs as. It needs read access to the block directories and the checkpoint |
+
+### Access
+
+The server has **no login and no TLS**: it is meant for the tunnel only. Never bind it to a public address.
+
+| From | URL |
+|---|---|
+| the workspace | `planserver health`, `planserver worlds`, `planserver plan --world <id> --goal <n>` (a wrapper around `scripts/planserver.py` with the right URL) |
+| a WireGuard client | `http://10.8.0.1:8770`: `GET /health`, `/worlds`, `/worlds/<id>`; `POST /plan`; `GET /worlds/<id>/ik_request`, `/worlds/<id>/pointcloud` and `/model/checkpoint` to run the model on the client |
+
+On the laptop, in the planner repository: `uv run python scripts/planserver.py health --url http://10.8.0.1:8770`, and `scripts/ursim_foxglove.py --planserver http://10.8.0.1:8770` for the Foxglove controls. Logs: `journalctl -u planserver -f` (one line per request with its duration and outcome).
+
+To serve a newer planner, rerun the component: it updates the clone to `planner_ref`, syncs the Python environment with the lockfile and restarts the service.
 
 ---
 
