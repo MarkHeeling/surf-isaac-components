@@ -36,6 +36,14 @@
     # to Remote Control (via VNC clicks; there is no API for it).
     ursim_auto_remote: true
 
+    # Joint angles (rad, comma separated) the simulated arm is moved to after every start,
+    # after the switch to Remote Control (so it needs ursim_auto_remote). URSim boots in
+    # (0, -90, 90, -90, -90, 0) degrees, which in the Paradaim cell model lies inside the
+    # cell: the planner's validator then refuses every motion, also the one home. Default =
+    # home of the Paradaim planner (90, -90, 125, -125, -90, 0 degrees). "" = stay in the
+    # boot pose.
+    ursim_start_joints: "1.5708,-1.5708,2.1817,-2.1817,-1.5708,0"
+
     # false (default) = installed but not started at boot: start it when needed with
     # `sudo systemctl start ursim`. true = starts at every boot.
     ursim_autostart: false

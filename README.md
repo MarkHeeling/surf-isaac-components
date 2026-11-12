@@ -192,6 +192,7 @@ URSim is the official Universal Robots simulator: the real controller and PolySc
 | `ursim_subnet` / `ursim_ip` | `172.30.56.0/24` / `.101` | Private Docker network. Not `192.168.56.0/24` from the ROS-driver docs: that overlaps SURF's `192.168.0.0/16` |
 | `ursim_autostart` | `false` | `false` = installed but **not started at boot** (the workstation is mainly for training); start it with `sudo systemctl start ursim`. `true` = starts at every boot |
 | `ursim_auto_remote` | `true` | After every start, confirm a pending safety configuration and switch PolyScope to **Remote Control** |
+| `ursim_start_joints` | `1.5708,-1.5708,2.1817,-2.1817,-1.5708,0` | Joint angles (rad) the simulated arm is moved to after every start, once Remote Control is on. Default = home of the Paradaim planner (90, -90, 125, -125, -90, 0 degrees). `""` = stay in the boot pose. Needs `ursim_auto_remote` |
 | `externalcontrol_urcap_version` | `1.0.6` | External Control URCap for the ROS driver |
 
 ### Access
@@ -213,6 +214,10 @@ Two PolyScope states block external control, on URSim exactly as on the real arm
 - **Local mode.** ur_rtde refuses with `Please enable remote control on the robot!`. Remote Control is enabled in the settings (seeded into `<volume>/ursim/polyscope`), but PolyScope **always boots in Local**, and there is no API to switch.
 
 `ursim-ready.sh` (run by `ursim.service` after every start) therefore clicks both through VNC. Switch back to Local in PolyScope (top right) to run programs from the screen yourself. URSim uses UR's default safety limits, not those of your cell.
+
+### Why the arm is moved after a start
+
+URSim always boots in the same pose, (0, -90, 90, -90, -90, 0) degrees. In the model of the Paradaim cell that pose lies 74 mm inside the cell. The planner validates every motion against the cell before it reaches the robot, also the move home, so on a freshly started URSim it refused everything until the arm had been moved out by hand (`--allow-escape`, simulator only). `ursim-ready.sh` therefore powers the arm on, releases the brakes and moves it to `ursim_start_joints` with one `moveJ`. Nothing checks that move against a cell, which is fine for a simulator; it is the reason this lives in the URSim component and not in robot code. The smoke test `test_rtde.py` starts from the pose the arm is in and returns to it.
 
 ### Storage
 
