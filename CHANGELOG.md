@@ -1,8 +1,39 @@
 # Changelog
 
-Notable changes to the `nvidia-isaac-sim-lab-arena` SURF Research Cloud component.
+Notable changes to the SURF Research Cloud components in this repository.
 Images are pinned by digest, so a "version" is the pinned image plus this history.
 Dates are when the change landed in the repo.
+
+## 2026-11-12 — WireGuard is its own component; new component paradaim-planserver
+
+- **`wireguard/install-wireguard.yml`** is the WireGuard server that was part of
+  `nvidia-isaac-sim-lab-arena`: same parameters (`wireguard_port`, `wireguard_address`,
+  `wireguard_peers`, `wireguard_endpoint`, `wireguard_private_key`), same `wg0.conf`. A
+  workspace without Isaac (URSim and the plan server on a CPU flavour) can now have the
+  tunnel. The client example moved to `/etc/wireguard-client-example.conf`.
+- **`nvidia-isaac-sim-lab-arena` no longer installs WireGuard.** It looks for the tunnel
+  (`wg0`) and advertises the stream on its IP; `isaac_stream_over_wireguard=false` keeps
+  `isaacsim_host`. The parameter `wireguard_enabled` is gone.
+- **Migration of an existing catalog item:** add the `wireguard` component before the Isaac
+  component, move the `wireguard_*` parameters (and the `wireguard_private_key` secret) to
+  it and remove `wireguard_enabled`. A workstation that is already running keeps its
+  tunnel and its key. An item that still passes `wireguard_enabled=true` stops with this
+  instruction when there is no tunnel, instead of coming up without one.
+- **`paradaim-planserver/install-planserver.yml`** runs the plan server of the Paradaim
+  planner under `planserver.service`, on the WireGuard IP only (`planserver_bind_address`,
+  port 8770): stored expert trajectories and, with `planserver_checkpoint`, the model on the
+  CPU. `planserver_mode=gpu` (cuRobo) is reserved and stops with a message. The Python
+  environment comes from the planner's lockfile (uv), under its own system user.
+- Catalog item orders are in the README: `wireguard → universal-robots-ursim →
+  paradaim-planserver` for a CPU test server.
+- Tested in a container without systemd and without a kernel WireGuard module: the plan
+  server playbook up to and including the generated unit (clone, Python environment,
+  parameter checks, wrapper), and the server started with the unit's command line as the
+  service user answered `/health` and `/plan` with stored trajectories and with a model.
+  **Not run yet:** the `wireguard` playbook, the changed Isaac playbook and the systemd
+  tasks of the plan server; run them on a workspace before relying on them.
+  Also untested: URSim's connection back to a UR Client Library program on a WireGuard
+  client (the reverse IP is then the client's tunnel IP).
 
 ## 2026-11-02 — New optional component: universal-robots-ursim
 
@@ -17,6 +48,7 @@ Dates are when the change landed in the repo.
 - Validated on the RTX 6000 workstation: on a fresh volume (safety confirmation and Remote
   switch done by the script, ur_rtde smoke test passes) and on an existing one; a second
   run reports no changes.
+
 ## 2026-11-02 — Isaac does not start at boot by default
 
 - New parameter `isaac_autostart` (default `false`). The unit and image are installed

@@ -2,8 +2,8 @@
 #
 # Runs URSim (PolyScope + controller) as a Docker container, so robot code
 # (ur_rtde, the ROS driver, cuRobo) can be tested before it drives the real arm.
-# Optional: add it to a catalog item after nvidia-isaac-sim-lab-arena (which
-# provides Docker and WireGuard), or on its own (it installs Docker if missing).
+# Optional: add it to a catalog item after wireguard (the tunnel its ports listen on)
+# and, on a GPU workstation, after nvidia-isaac-sim-lab-arena. It installs Docker if missing.
 ---
 - name: Universal Robots URSim (e-Series) simulator
   hosts: localhost
