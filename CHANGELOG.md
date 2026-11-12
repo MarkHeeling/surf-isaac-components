@@ -14,6 +14,13 @@ Dates are when the change landed in the repo.
   `--url http://10.8.0.1:8770` on the laptop until then, or set `planserver_port` explicitly.
 - Not run on a workspace; `ansible-playbook --syntax-check` only.
 
+## 2026-11-12 — URSim: the arm moves to a start pose after every start
+
+- **`universal-robots-ursim`: new parameter `ursim_start_joints`** (default: home of the Paradaim planner, `1.5708,-1.5708,2.1817,-2.1817,-1.5708,0` rad; `""` = off). After the switch to Remote Control, `ursim-ready.sh` powers the simulated arm on, releases the brakes and moves it there. URSim boots in (0, -90, 90, -90, -90, 0) degrees, which lies 74 mm inside the model of the Paradaim cell: the planner's validator refused every motion from there, so `tests/test_ursim.py` and the Foxglove panel failed on a fresh workspace until the arm was moved out with `--allow-escape`.
+- `test_rtde.py` starts from the pose the arm is in and returns to it, instead of to the boot pose.
+- **Existing workspace:** rerun the component, or restart URSim after the update (`sudo systemctl restart ursim`). No migration.
+- Tested on the CPU test server (URSim 5.21.3, 12-11-2026): after `systemctl restart ursim` the arm is at the start pose 54 s later, `tests/test_ursim.py` of the planner passes 3 of 3 without `--allow-escape`, and the smoke test returns to the start pose.
+
 ## 2026-11-12 — WireGuard is its own component; new component paradaim-planserver
 
 - **`wireguard/install-wireguard.yml`** is the WireGuard server that was part of
