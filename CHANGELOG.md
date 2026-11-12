@@ -4,6 +4,16 @@ Notable changes to the SURF Research Cloud components in this repository.
 Images are pinned by digest, so a "version" is the pinned image plus this history.
 Dates are when the change landed in the repo.
 
+## 2026-11-12 — Plan server moves to port 8780
+
+- `planserver_port` defaults to `8780` (was `8770`). On the Isaac workstation the planner's
+  dataset server (`scripts/dataset_foxglove.py`) already listens on `8770` and `8771` of the
+  tunnel IP, so the two could not run together. The planner's client and `planserver.py serve`
+  default to `8780` as well (planner master, same day).
+- A workspace built before this change keeps `8770` until the component runs again; pass
+  `--url http://10.8.0.1:8770` on the laptop until then, or set `planserver_port` explicitly.
+- Not run on a workspace; `ansible-playbook --syntax-check` only.
+
 ## 2026-11-12 — WireGuard is its own component; new component paradaim-planserver
 
 - **`wireguard/install-wireguard.yml`** is the WireGuard server that was part of
