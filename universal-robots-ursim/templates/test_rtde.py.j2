@@ -20,9 +20,9 @@ print("Robot mode:", db.robotmode())
 
 rr = RTDEReceiveInterface(ip)
 rc = RTDEControlInterface(ip)
-home = [0.0, -1.57, 1.57, -1.57, -1.57, 0.0]
+# From the pose the arm is in (ursim_start_joints after a start) and back to it.
+home = rr.getActualQ()
 target = [home[0] + 0.3] + home[1:]
-rc.moveJ(home, 1.0, 1.0)
 rc.moveJ(target, 1.0, 1.0)
 q = rr.getActualQ()
 err = max(abs(a - b) for a, b in zip(q, target))

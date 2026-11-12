@@ -3,6 +3,7 @@
 # After URSim starts: confirm a pending safety configuration and switch PolyScope to
 # Remote Control, so ur_rtde / the ROS driver are accepted. PolyScope has no API for
 # either, so this clicks through VNC (screen 1280x800).
+# With ursim_start_joints set it then powers the simulated arm on and moves it to that pose.
 IP={{ ursim_ip }}
 VENV={{ ursim_tools_dir }}/venv
 V="$VENV/bin/vncdo -s $IP::5900"
@@ -41,12 +42,59 @@ for try in 1 2 3; do
 done
 rtde_ok || echo "URSim: RTDE still not streaming (confirm the safety configuration in PolyScope)"
 
+remote=0
 for try in 1 2 3 4 5; do
-  if [ "$(dash 'is in remote control')" = "true" ]; then echo "URSim: Remote Control active"; exit 0; fi
+  if [ "$(dash 'is in remote control')" = "true" ]; then echo "URSim: Remote Control active"; remote=1; break; fi
   # Top-right Local icon opens the menu; "Remote Control" is the item below it. The menu
   # only takes a click after a few seconds, so the item is clicked in a second session.
   click move 1110 25 pause 0.5 move 1117 32 pause 0.5 click 1 pause 3
   $V move 1040 80 pause 0.5 move 1054 88 pause 0.5 click 1 pause 3
 done
-echo "URSim: could not switch to Remote Control (do it in PolyScope, top right)"
-exit 1
+if [ "$remote" != 1 ]; then
+  echo "URSim: could not switch to Remote Control (do it in PolyScope, top right)"
+  exit 1
+fi
+
+# URSim always boots in the same pose (0, -90, 90, -90, -90, 0 degrees). In the model of a
+# cell that pose can lie inside an obstacle; a planner that validates every motion against
+# the cell then refuses the first one, also the way out. So the simulated arm is powered on
+# and moved to ursim_start_joints once after every start. Nothing checks this move against a
+# cell: that is fine for a simulator and the reason it lives here and not in robot code.
+START_Q="{{ ursim_start_joints | default('', true) | string | trim }}"
+[ -n "$START_Q" ] || exit 0
+"$VENV/bin/python" -I - "$IP" "$START_Q" <<'PY'
+import sys, time
+from dashboard_client import DashboardClient
+from rtde_control import RTDEControlInterface
+from rtde_receive import RTDEReceiveInterface
+
+ip = sys.argv[1]
+try:
+    target = [float(x) for x in sys.argv[2].replace(",", " ").split()]
+except ValueError:
+    target = []
+if len(target) != 6:
+    sys.exit("URSim: ursim_start_joints needs six joint angles in rad, got %r" % sys.argv[2])
+db = DashboardClient(ip)
+db.connect()
+db.closeSafetyPopup()
+db.powerOn()
+time.sleep(1)
+db.brakeRelease()
+for _ in range(60):
+    if "RUNNING" in db.robotmode():
+        break
+    time.sleep(1)
+else:
+    sys.exit("URSim: the arm did not reach RUNNING (%s); not moved" % db.robotmode())
+rr = RTDEReceiveInterface(ip)
+if max(abs(a - b) for a, b in zip(rr.getActualQ(), target)) > 1e-3:
+    rc = RTDEControlInterface(ip)
+    rc.moveJ(target, 1.0, 1.0)
+    rc.stopScript()
+    rc.disconnect()
+err = max(abs(a - b) for a, b in zip(rr.getActualQ(), target))
+if err > 1e-2:
+    sys.exit("URSim: start pose not reached (max error %.4f rad)" % err)
+print("URSim: arm at the start pose", [round(x, 4) for x in target])
+PY
