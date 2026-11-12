@@ -257,7 +257,7 @@ A laptop that runs the model itself still uses the server for the worlds, the st
 | `planserver_checkpoint` | `""` | Model checkpoint, e.g. `planner/outputs/<run>/checkpoint.pt`. Empty = no `model`, only `stored` |
 | `planserver_esdf_cache` | `/var/cache/planserver/esdf` | Distance fields the model computes once per environment |
 | `planserver_bind_address` | `10.8.0.1` | Address the server listens on. Default = WireGuard tunnel IP. Use `127.0.0.1` without WireGuard (SSH tunnel). The playbook stops when the address is not on the workspace |
-| `planserver_port` | `8770` | HTTP port |
+| `planserver_port` | `8780` | HTTP port. Not `8770`/`8771`: the planner's dataset server (`scripts/dataset_foxglove.py`) listens there on the Isaac workstation |
 | `planserver_autostart` | `true` | Start at boot (the `cpu` mode is light). `false` = installed but stopped: `sudo systemctl start planserver` |
 | `planserver_user` | `planserver` | System user the service runs as. It needs read access to the block directories and the checkpoint |
 
@@ -268,9 +268,9 @@ The server has **no login and no TLS**: it is meant for the tunnel only. Never b
 | From | URL |
 |---|---|
 | the workspace | `planserver health`, `planserver worlds`, `planserver plan --world <id> --goal <n>` (a wrapper around `scripts/planserver.py` with the right URL) |
-| a WireGuard client | `http://10.8.0.1:8770`: `GET /health`, `/worlds`, `/worlds/<id>`; `POST /plan`; `GET /worlds/<id>/ik_request`, `/worlds/<id>/pointcloud` and `/model/checkpoint` to run the model on the client |
+| a WireGuard client | `http://10.8.0.1:8780`: `GET /health`, `/worlds`, `/worlds/<id>`; `POST /plan`; `GET /worlds/<id>/ik_request`, `/worlds/<id>/pointcloud` and `/model/checkpoint` to run the model on the client |
 
-On the laptop, in the planner repository: `uv run python scripts/planserver.py health --url http://10.8.0.1:8770`, and `scripts/ursim_foxglove.py --planserver http://10.8.0.1:8770` for the Foxglove controls. Logs: `journalctl -u planserver -f` (one line per request with its duration and outcome).
+On the laptop, in the planner repository: `uv run python scripts/planserver.py health --url http://10.8.0.1:8780`, and `scripts/ursim_foxglove.py --planserver http://10.8.0.1:8780` for the Foxglove controls. Logs: `journalctl -u planserver -f` (one line per request with its duration and outcome).
 
 To serve a newer planner, rerun the component: it updates the clone to `planner_ref`, syncs the Python environment with the lockfile and restarts the service.
 
