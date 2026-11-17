@@ -81,7 +81,7 @@
     # 0.8.0.post1.dev43, the version in the provenance of the v5 expert data. A full clone,
     # because cuRobo derives its version from the git history.
     curobo_repo: "https://github.com/NVlabs/curobo.git"
-    curobo_ref: "78fd485f"
+    curobo_ref: "78fd485fa82d9b9a063fb4985e371814587e666a"
     curobo_python_version: "3.11"
     curobo_torch: "torch>=2.13"
     curobo_torch_index: "https://download.pytorch.org/whl/cu130"
@@ -300,14 +300,27 @@
           changed_when: false
           failed_when: false
 
-        - name: Stop when it does not
+        - name: Stop when it does not (planserver_mode=gpu)
           ansible.builtin.fail:
             msg: >-
               {{ ps_planner_dir }} has no {{ planserver_curobo_python_flag }} for
               scripts/planserver.py serve: planner_ref '{{ planner_ref }}' (or the checkout in
               planner_checkout) is older than the cuRobo backend of the plan server. Use a ref
-              with the backend, or planserver_mode=cpu.
-          when: ps_backend_check.rc != 0
+              with the backend, or planserver_mode=auto or cpu.
+          when:
+            - ps_backend_check.rc != 0
+            - ps_mode_asked == 'gpu'
+
+        # auto: a GPU flavour with a planner without the backend still gets a working
+        # server. The remaining tasks of this block skip themselves (ps_mode is cpu now).
+        - name: Fall back to the cpu mode when it does not (planserver_mode=auto)
+          ansible.builtin.set_fact:
+            ps_mode: "cpu"
+            ps_curobo_rw: false
+            ps_gpu_fallback: true
+          when:
+            - ps_backend_check.rc != 0
+            - ps_mode_asked == 'auto'
 
         - name: Driver state
           ansible.builtin.command: nvidia-smi
@@ -573,6 +586,10 @@
           - "Mode: {{ ps_mode }}{{ (' (auto: ' ~ (ps_pci_gpus.stdout_lines | length) ~ ' NVIDIA GPU(s))') if ps_mode_asked == 'auto' else '' }}"
           - "{{ 'Starts at boot.' if (planserver_autostart | bool) else 'On demand: sudo systemctl start planserver (stop: sudo systemctl stop planserver)' }}"
           - "{{ ('cuRobo worker: ' ~ ps_curobo_python) if ps_mode == 'gpu' else 'No cuRobo (cpu mode).' }}"
+          - >-
+            {{ ('WARNING: this workspace has a GPU, but planner_ref ' ~ planner_ref ~ ' has no '
+                ~ planserver_curobo_python_flag ~ ' (no cuRobo backend yet), so it serves in the cpu mode.')
+               if ps_gpu_fallback | default(false) else '' }}
           - >-
             {{ 'NOT STARTED: the NVIDIA driver is not loaded yet. Reboot once (sudo systemctl reboot -i); it starts at boot.'
                if not (ps_can_start | bool) else '' }}

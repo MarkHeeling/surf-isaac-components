@@ -17,8 +17,9 @@ Dates are when the change landed in the repo.
   otherwise `cpu`. With it, the "Robot test server" item can get SURF's CUDA component and a GPU
   flavour next to its CPU flavours. On a CPU flavour nothing changes: the unit is byte for byte
   the same as before (checked by rendering both templates), so a rerun does not restart the server.
-- gpu mode stops with a message when the planner checkout has no `--curobo-python` (a
-  `planner_ref` older than the cuRobo backend), or when the driver supports less than CUDA 13.
+- When the planner checkout has no `--curobo-python` (a `planner_ref` older than the cuRobo
+  backend), `auto` falls back to the cpu mode with a warning and an explicit `gpu` stops. gpu mode
+  also stops when the driver supports less than CUDA 13.
   With a driver that is not loaded yet it installs and enables the service but starts it only
   after a reboot.
 - `planserver_extra_args` (both modes): extra arguments for `planserver.py serve`.

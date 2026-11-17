@@ -241,6 +241,8 @@ The plan server of the [Paradaim planner](https://github.com/MarkHeeling/planner
 | `cpu` | `stored` (the expert trajectories of the dataset) and, with a checkpoint, `model` | no GPU |
 | `gpu` | adds `curobo` and `model_curobo` (the model's samples as seeds for cuRobo) | an NVIDIA GPU with a driver for CUDA 13 (580 or newer; SURF's CUDA component before this one), and a `planner_ref` with the cuRobo backend of the plan server |
 
+With `auto` on a GPU flavour and a `planner_ref` without the cuRobo backend (no `--curobo-python` yet), the server comes up in the cpu mode and the playbook output says so; an explicit `gpu` stops instead.
+
 A laptop that runs the model itself still uses the server for the worlds, the stored trajectories and, later, cuRobo: for `model_curobo` it sends its own samples as seeds in the request.
 
 ### Parameters
@@ -269,7 +271,7 @@ A laptop that runs the model itself still uses the server for the worlds, the st
 | `planserver_curobo_python` | `""` | Python of an existing cuRobo environment to use instead of building one, e.g. `/data/isaac-data/curobo/venv/bin/python`. The service user must be able to run it, with every directory above it and the Python it links to; a uv venv under `/home` usually fails that (`/home/*` is `0750`). The playbook checks it as the service user. Empty = build one |
 | `planserver_curobo_python_flag` | `--curobo-python` | The option of `planserver.py serve` that takes that Python (the cuRobo backend of the planner). The playbook stops when the planner checkout does not have it |
 | `planserver_curobo_dir` | `/opt/planserver/curobo` | Where the built environment goes: cuRobo source in `src/`, environment in `venv/` (boot disk, several GB: torch with its CUDA libraries) |
-| `curobo_repo` / `curobo_ref` | NVlabs/curobo / `78fd485f` | cuRobo to build. `78fd485f` is `0.8.0.post1.dev43`, the version in the provenance of the v5 expert data; the playbook prints the version it got. A full clone: cuRobo takes its version from the git history |
+| `curobo_repo` / `curobo_ref` | NVlabs/curobo / `78fd485f…` (full SHA) | cuRobo to build. `78fd485f` (2026-09-10) is `0.8.0.post1.dev43`, 43 commits after v0.8.0, the version in the provenance of the v5 expert data; the playbook prints the version it got. A full clone: cuRobo takes its version from the git history |
 | `curobo_python_version` | `3.11` | Python of the environment (uv downloads it) |
 | `curobo_torch` / `curobo_torch_index` | `torch>=2.13` / `https://download.pytorch.org/whl/cu130` | PyTorch and the index it comes from |
 | `curobo_cuda_extra` | `cu13` | cuRobo's extra: `cu13` (driver 580+) or `cu12` (then also a cu12x torch index) |

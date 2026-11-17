@@ -15,6 +15,9 @@ Environment=HOME={{ planserver_dir }}
 # The planner code of this checkout goes first, also when that environment has
 # planner installed editable from another checkout (scripts/gpu.sh does the same).
 Environment=PYTHONPATH={{ ps_planner_dir }}/src
+# CUDA needs /dev/nvidia-uvm, which after a boot only appears when nvidia-modprobe
+# runs as root; NoNewPrivileges keeps the service user from doing that itself.
+ExecStartPre=-+/usr/bin/nvidia-modprobe -u -c=0
 {% if planserver_cuda_visible_devices | string | trim | length > 0 %}
 Environment=CUDA_VISIBLE_DEVICES={{ planserver_cuda_visible_devices | string | trim }}
 {% endif %}
