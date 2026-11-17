@@ -365,8 +365,7 @@
               ansible.builtin.set_fact:
                 ps_gpu_ready: "{{ ps_nvidia_smi.rc == 0 }}"
                 ps_driver_cuda: >-
-                  {{ (ps_nvidia_smi.stdout | default('') | regex_search('CUDA Version: *([0-9]+)', '\\1')
-                      | default([''], true)) | first }}
+                  {{ ((ps_nvidia_smi.stdout | default('')) | regex_findall('CUDA Version: *([0-9]+)') + ['']) | first }}
 
             - name: Stop when the driver is too old for a CUDA 13 build
               ansible.builtin.fail:
@@ -645,7 +644,7 @@
                    ansible_failed_result.stdout | default('')] | join(' ') | trim
                   | replace((planner_git_token | default('') | trim)
                             if (planner_git_token | default('') | trim | length > 0) else '\x00', '***'))
-                 | truncate(3000) }}
+                 | truncate(3000) | default(ansible_failed_result | default({}) | to_json | truncate(3000), true) }}
 
         - name: Directory for the note
           ansible.builtin.file: { path: /opt/planserver, state: directory, mode: "0755" }
