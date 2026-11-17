@@ -90,538 +90,589 @@
     planserver_cuda_visible_devices: ""
     # Seconds the warm-up plan after a start may take (first start compiles the kernels).
     planserver_warmup_timeout: 600
+    # true: a failing install does not fail the workspace. The reason goes to
+    # /opt/planserver/INSTALL-FAILED.txt and the login banner (SURF hides the output of
+    # a failed component and destroys a workspace whose creation failed).
+    planserver_fail_soft: true
 
   tasks:
-    # ------------------------------------------------------------ 0. Parameters
-    - name: Normalise the mode
-      ansible.builtin.set_fact:
-        ps_mode_asked: "{{ planserver_mode | string | trim | lower }}"
+    - name: Remove a failure note of an earlier run
+      ansible.builtin.file: { path: /opt/planserver/INSTALL-FAILED.txt, state: absent }
 
-    - name: Stop on an unknown mode
-      ansible.builtin.fail:
-        msg: "planserver_mode must be auto, cpu or gpu, not '{{ planserver_mode }}'."
-      when: ps_mode_asked not in ['auto', 'cpu', 'gpu']
-
-    # From the PCI bus, not nvidia-smi: right after the CUDA component installed a driver
-    # it may only load after a reboot, and the GPU is there all the same.
-    - name: NVIDIA GPUs on the PCI bus
-      ansible.builtin.shell: |
-        set -o pipefail
-        for d in /sys/bus/pci/devices/*; do
-          case "$(cat "$d/vendor"):$(cat "$d/class")" in
-            0x10de:0x0300*|0x10de:0x0302*) echo "${d##*/}" ;;
-          esac
-        done
-      args: { executable: /bin/bash }
-      register: ps_pci_gpus
-      changed_when: false
-
-    - name: Mode that is installed
-      ansible.builtin.set_fact:
-        ps_mode: >-
-          {{ ps_mode_asked if ps_mode_asked != 'auto'
-             else ('gpu' if ps_pci_gpus.stdout_lines | length > 0 else 'cpu') }}
-
-    - name: Stop on the gpu mode without a GPU
-      ansible.builtin.fail:
-        msg: >-
-          planserver_mode=gpu, but this workspace has no NVIDIA GPU. Pick a GPU flavour,
-          or set planserver_mode to auto or cpu.
-      when:
-        - ps_mode == 'gpu'
-        - ps_pci_gpus.stdout_lines | length == 0
-
-    - name: Paths from the parameters
-      ansible.builtin.set_fact:
-        ps_volume_dir: >-
-          {%- set r = (planserver_data_root | string | trim | regex_replace('/+$', '')) -%}
-          {{ r if r.startswith('/') else '/data/' ~ r }}
-        ps_planner_dir: >-
-          {{ (planner_checkout | string | trim | regex_replace('/+$', ''))
-             if (planner_checkout | string | trim | length > 0) else planserver_dir ~ '/planner' }}
-        ps_venv: "{{ planserver_dir }}/venv"
-        ps_uv: "{{ planserver_dir }}/uv/bin/uv"
-        ps_curobo_dir: "{{ planserver_curobo_dir | string | trim | regex_replace('/+$', '') }}"
-        ps_curobo_build: "{{ (planserver_curobo_python | string | trim | length) == 0 }}"
-
-    - name: Python of the cuRobo worker
-      ansible.builtin.set_fact:
-        ps_curobo_python: >-
-          {{ (ps_curobo_dir ~ '/venv/bin/python') if ps_curobo_build | bool
-             else (planserver_curobo_python | string | trim) }}
-        # The service may write in a cuRobo environment it built itself (kernel caches).
-        ps_curobo_rw: >-
-          {{ ps_mode == 'gpu' and (ps_curobo_build | bool)
-             and not ps_curobo_dir.startswith(planserver_dir ~ '/') }}
-
-    - name: Block directories and checkpoint as absolute paths
-      ansible.builtin.set_fact:
-        ps_blocks: >-
-          {%- set out = [] -%}
-          {%- for b in ((planserver_blocks | join(' ')) if planserver_blocks is not string else planserver_blocks)
-                       | replace(',', ' ') | replace(';', ' ') | split -%}
-          {%- set _ = out.append(b if b.startswith('/') else ps_volume_dir ~ '/' ~ b) -%}
-          {%- endfor -%}
-          {{ out }}
-        ps_checkpoint: >-
-          {%- set c = planserver_checkpoint | string | trim -%}
-          {{ '' if c | length == 0 else (c if c.startswith('/') else ps_volume_dir ~ '/' ~ c) }}
-
-    # The service would restart forever on an address that does not exist.
-    - name: Stop when the bind address is not on this workspace
-      ansible.builtin.fail:
-        msg: >-
-          planserver_bind_address {{ planserver_bind_address }} is not an address of this
-          workspace ({{ ansible_all_ipv4_addresses | join(', ') }}). The default is the
-          WireGuard tunnel IP: put the wireguard component before this one in the catalog
-          item, or set planserver_bind_address=127.0.0.1 and reach the server through an
-          SSH tunnel.
-      when:
-        - planserver_bind_address != '0.0.0.0'
-        - not planserver_bind_address.startswith('127.')
-        - planserver_bind_address not in (ansible_all_ipv4_addresses | default([]))
-
-    # Listening on the tunnel: start after it (and with it at boot).
-    - name: Whether the bind address is the WireGuard tunnel
-      ansible.builtin.set_fact:
-        ps_on_wireguard: >-
-          {{ (ansible_facts['wg0'] | default({})).get('ipv4', {}).get('address', '') == planserver_bind_address }}
-
-    # ------------------------------------------------------------ 1. User and directories
-    - name: Packages
-      ansible.builtin.apt:
-        name: [git, python3-venv, ca-certificates]
-        update_cache: true
-      tags: [packages]
-
-    - name: Service user
-      ansible.builtin.user:
-        name: "{{ planserver_user }}"
-        system: true
-        shell: /usr/sbin/nologin
-        home: "{{ planserver_dir }}"
-        create_home: false
-
-    - name: Directories
-      ansible.builtin.file:
-        path: "{{ item }}"
-        state: directory
-        owner: "{{ planserver_user }}"
-        mode: "0755"
-      loop:
-        - "{{ planserver_dir }}"
-        - "{{ planserver_esdf_cache }}"
-
-    # ------------------------------------------------------------ 2. Code
-    - name: Clone or update the planner
-      when: planner_checkout | string | trim | length == 0
+    - name: Install the plan server
       block:
-        - name: Repository address (with the token for a private repository)
+        # ------------------------------------------------------------ 0. Parameters
+        - name: Normalise the mode
           ansible.builtin.set_fact:
-            ps_repo_url: >-
-              {{ planner_repo | regex_replace('^https://', 'https://x-access-token:' ~ (planner_git_token | trim) ~ '@')
-                 if (planner_git_token | trim | length > 0) else planner_repo }}
-          no_log: true
+            ps_mode_asked: "{{ planserver_mode | string | trim | lower }}"
 
-        - name: Checkout {{ planner_ref }}
-          ansible.builtin.git:
-            repo: "{{ ps_repo_url }}"
-            dest: "{{ ps_planner_dir }}"
-            version: "{{ planner_ref }}"
-            force: true
-          become: true
-          become_user: "{{ planserver_user }}"
-          register: ps_git
-          no_log: "{{ planner_git_token | trim | length > 0 }}"
+        - name: Stop on an unknown mode
+          ansible.builtin.fail:
+            msg: "planserver_mode must be auto, cpu or gpu, not '{{ planserver_mode }}'."
+          when: ps_mode_asked not in ['auto', 'cpu', 'gpu']
 
-        # The token must not stay in .git/config on the workspace.
-        - name: Remove the token from the checkout
-          ansible.builtin.command: "git -C {{ ps_planner_dir }} remote set-url origin {{ planner_repo }}"  # noqa: command-instead-of-module
-          become: true
-          become_user: "{{ planserver_user }}"
+        # From the PCI bus, not nvidia-smi: right after the CUDA component installed a driver
+        # it may only load after a reboot, and the GPU is there all the same.
+        - name: NVIDIA GPUs on the PCI bus
+          ansible.builtin.shell: |
+            set -o pipefail
+            for d in /sys/bus/pci/devices/*; do
+              case "$(cat "$d/vendor"):$(cat "$d/class")" in
+                0x10de:0x0300*|0x10de:0x0302*) echo "${d##*/}" ;;
+              esac
+            done
+          args: { executable: /bin/bash }
+          register: ps_pci_gpus
           changed_when: false
 
-      # no_log hides why a clone fails. Ask GitHub directly and show the answer with the
-      # token blanked out, so a failed workspace says what to fix.
-      rescue:
-        - name: Ask GitHub whether the token can read {{ planner_ref }}
-          ansible.builtin.command:
-            argv: [git, ls-remote, "{{ ps_repo_url }}", "{{ planner_ref }}"]
-          environment: { GIT_TERMINAL_PROMPT: "0" }
-          register: ps_git_probe
-          changed_when: false
-          failed_when: false
-          no_log: true
+        - name: Mode that is installed
+          ansible.builtin.set_fact:
+            ps_mode: >-
+              {{ ps_mode_asked if ps_mode_asked != 'auto'
+                 else ('gpu' if ps_pci_gpus.stdout_lines | length > 0 else 'cpu') }}
 
-        - name: Why the checkout failed (token removed)
+        - name: Stop on the gpu mode without a GPU
           ansible.builtin.fail:
             msg: >-
-              Checkout of {{ planner_ref }} from {{ planner_repo }} as {{ planserver_user }} failed.
-              git ls-remote rc={{ ps_git_probe.rc | default('?') }}:
-              {{ ((ps_git_probe.stderr | default('')) ~ ' ' ~ (ps_git_probe.stdout | default('')))
-                 | replace((planner_git_token | trim) if (planner_git_token | trim | length > 0) else '\x00', '***')
-                 | trim | truncate(400) }}.
-              Empty output with rc=0 = the ref does not exist; rc=128 "Authentication failed" or
-              "not found" = the planner_git_token co-secret is wrong, expired or has no access.
-              Otherwise the checkout itself failed (rights on {{ ps_planner_dir }}, disk).
+              planserver_mode=gpu, but this workspace has no NVIDIA GPU. Pick a GPU flavour,
+              or set planserver_mode to auto or cpu.
+          when:
+            - ps_mode == 'gpu'
+            - ps_pci_gpus.stdout_lines | length == 0
 
-    - name: Check that the checkout has the plan server
-      ansible.builtin.stat: { path: "{{ ps_planner_dir }}/scripts/planserver.py" }
-      register: ps_script
+        - name: Paths from the parameters
+          ansible.builtin.set_fact:
+            ps_volume_dir: >-
+              {%- set r = (planserver_data_root | string | trim | regex_replace('/+$', '')) -%}
+              {{ r if r.startswith('/') else '/data/' ~ r }}
+            ps_planner_dir: >-
+              {{ (planner_checkout | string | trim | regex_replace('/+$', ''))
+                 if (planner_checkout | string | trim | length > 0) else planserver_dir ~ '/planner' }}
+            ps_venv: "{{ planserver_dir }}/venv"
+            ps_uv: "{{ planserver_dir }}/uv/bin/uv"
+            ps_curobo_dir: "{{ planserver_curobo_dir | string | trim | regex_replace('/+$', '') }}"
+            ps_curobo_build: "{{ (planserver_curobo_python | string | trim | length) == 0 }}"
 
-    - name: Stop when it does not
-      ansible.builtin.fail:
-        msg: >-
-          {{ ps_planner_dir }}/scripts/planserver.py is missing: planner_ref '{{ planner_ref }}'
-          (or the checkout in planner_checkout) is older than the plan server.
-      when: not ps_script.stat.exists
+        - name: Python of the cuRobo worker
+          ansible.builtin.set_fact:
+            ps_curobo_python: >-
+              {{ (ps_curobo_dir ~ '/venv/bin/python') if ps_curobo_build | bool
+                 else (planserver_curobo_python | string | trim) }}
+            # The service may write in a cuRobo environment it built itself (kernel caches).
+            ps_curobo_rw: >-
+              {{ ps_mode == 'gpu' and (ps_curobo_build | bool)
+                 and not ps_curobo_dir.startswith(planserver_dir ~ '/') }}
 
-    - name: Commit that is served
-      ansible.builtin.command: "git -c safe.directory={{ ps_planner_dir }} -C {{ ps_planner_dir }} rev-parse --short HEAD"  # noqa: command-instead-of-module
-      register: ps_commit
-      changed_when: false
-      failed_when: false
+        - name: Block directories and checkpoint as absolute paths
+          ansible.builtin.set_fact:
+            ps_blocks: >-
+              {%- set out = [] -%}
+              {%- for b in ((planserver_blocks | join(' ')) if planserver_blocks is not string else planserver_blocks)
+                           | replace(',', ' ') | replace(';', ' ') | split -%}
+              {%- set _ = out.append(b if b.startswith('/') else ps_volume_dir ~ '/' ~ b) -%}
+              {%- endfor -%}
+              {{ out }}
+            ps_checkpoint: >-
+              {%- set c = planserver_checkpoint | string | trim -%}
+              {{ '' if c | length == 0 else (c if c.startswith('/') else ps_volume_dir ~ '/' ~ c) }}
 
-    # ------------------------------------------------------------ 3. Python environment
-    # uv in its own venv (no curl | sh); the planner's lockfile decides the versions.
-    - name: Install uv
-      ansible.builtin.pip:
-        name: uv
-        virtualenv: "{{ planserver_dir }}/uv"
-        virtualenv_command: python3 -m venv
-      become: true
-      become_user: "{{ planserver_user }}"
-
-    # UV_PROJECT_ENVIRONMENT keeps the environment in planserver_dir, also when the
-    # code is a checkout that belongs to someone else (planner_checkout).
-    - name: Python environment from the lockfile (first run downloads torch; several minutes)
-      ansible.builtin.command:
-        cmd: "{{ ps_uv }} sync --frozen --no-default-groups"
-        chdir: "{{ ps_planner_dir }}"
-      environment:
-        UV_PROJECT_ENVIRONMENT: "{{ ps_venv }}"
-        UV_CACHE_DIR: "{{ planserver_dir }}/uv-cache"
-        UV_PYTHON_INSTALL_DIR: "{{ planserver_dir }}/python"
-        HOME: "{{ planserver_dir }}"
-      become: true
-      become_user: "{{ planserver_user }}"
-      register: ps_sync
-      changed_when: "'Installed' in ps_sync.stderr or 'Uninstalled' in ps_sync.stderr"
-
-    # ------------------------------------------------------------ 3b. cuRobo (gpu mode)
-    # cuRobo has its own Python environment, never mixed with the planner's (CLAUDE.md of
-    # the planner): only planner/data/curobo.py imports it, in a worker process that the
-    # server starts with planserver_curobo_python_flag. Without CUROBO_USE_PYBIND cuRobo
-    # compiles its kernels at run time (cuda-core), so no nvcc is needed here.
-    - name: CuRobo environment (gpu mode)
-      when: ps_mode == 'gpu'
-      block:
-        - name: Check that the planner has the cuRobo backend
-          ansible.builtin.command:
-            cmd: grep -rlF -e "{{ planserver_curobo_python_flag }}" scripts/planserver.py src/planner/planserver
-            chdir: "{{ ps_planner_dir }}"
-          register: ps_backend_check
-          changed_when: false
-          failed_when: false
-
-        - name: Stop when it does not (planserver_mode=gpu)
+        # The service would restart forever on an address that does not exist.
+        - name: Stop when the bind address is not on this workspace
           ansible.builtin.fail:
             msg: >-
-              {{ ps_planner_dir }} has no {{ planserver_curobo_python_flag }} for
-              scripts/planserver.py serve: planner_ref '{{ planner_ref }}' (or the checkout in
-              planner_checkout) is older than the cuRobo backend of the plan server. Use a ref
-              with the backend, or planserver_mode=auto or cpu.
+              planserver_bind_address {{ planserver_bind_address }} is not an address of this
+              workspace ({{ ansible_all_ipv4_addresses | join(', ') }}). The default is the
+              WireGuard tunnel IP: put the wireguard component before this one in the catalog
+              item, or set planserver_bind_address=127.0.0.1 and reach the server through an
+              SSH tunnel.
           when:
-            - ps_backend_check.rc != 0
-            - ps_mode_asked == 'gpu'
+            - planserver_bind_address != '0.0.0.0'
+            - not planserver_bind_address.startswith('127.')
+            - planserver_bind_address not in (ansible_all_ipv4_addresses | default([]))
 
-        # auto: a GPU flavour with a planner without the backend still gets a working
-        # server. The remaining tasks of this block skip themselves (ps_mode is cpu now).
-        - name: Fall back to the cpu mode when it does not (planserver_mode=auto)
+        # Listening on the tunnel: start after it (and with it at boot).
+        - name: Whether the bind address is the WireGuard tunnel
           ansible.builtin.set_fact:
-            ps_mode: "cpu"
-            ps_curobo_rw: false
-            ps_gpu_fallback: true
-          when:
-            - ps_backend_check.rc != 0
-            - ps_mode_asked == 'auto'
+            ps_on_wireguard: >-
+              {{ (ansible_facts['wg0'] | default({})).get('ipv4', {}).get('address', '') == planserver_bind_address }}
 
-        - name: Driver state
-          ansible.builtin.command: nvidia-smi
-          register: ps_nvidia_smi
-          changed_when: false
-          failed_when: false
+        # ------------------------------------------------------------ 1. User and directories
+        - name: Packages
+          ansible.builtin.apt:
+            name: [git, python3-venv, ca-certificates]
+            update_cache: true
+          tags: [packages]
 
-        - name: Whether the driver is loaded, and the CUDA version it supports
-          ansible.builtin.set_fact:
-            ps_gpu_ready: "{{ ps_nvidia_smi.rc == 0 }}"
-            ps_driver_cuda: >-
-              {{ (ps_nvidia_smi.stdout | default('') | regex_search('CUDA Version: *([0-9]+)', '\\1')
-                  | default([''], true)) | first }}
+        - name: Service user
+          ansible.builtin.user:
+            name: "{{ planserver_user }}"
+            system: true
+            shell: /usr/sbin/nologin
+            home: "{{ planserver_dir }}"
+            create_home: false
 
-        - name: Stop when the driver is too old for a CUDA 13 build
-          ansible.builtin.fail:
-            msg: >-
-              The NVIDIA driver supports CUDA {{ ps_driver_cuda }}, the cuRobo environment is built
-              for CUDA 13 (curobo_cuda_extra={{ curobo_cuda_extra }}, {{ curobo_torch_index }}),
-              which needs driver 580 or newer. Install a newer driver (the CUDA component of the
-              catalog item), or build for CUDA 12: curobo_cuda_extra=cu12 and a cu12x torch index.
-          when:
-            - ps_gpu_ready | bool
-            - curobo_cuda_extra == 'cu13'
-            - ps_driver_cuda | length > 0
-            - ps_driver_cuda | int < 13
-
-        - name: Warn when the driver is not loaded yet
-          ansible.builtin.debug:
-            msg: >-
-              WARNING: nvidia-smi does not work yet ({{ ((ps_nvidia_smi.stdout_lines | default([])) + (ps_nvidia_smi.stderr_lines | default([])))
-              | first | default('rc=' ~ ps_nvidia_smi.rc) }}). Usually the driver of the CUDA
-              component only loads after a reboot. The plan server is installed but not started;
-              reboot once (sudo systemctl reboot -i) and it starts at boot.
-          when: not (ps_gpu_ready | bool)
-
-        - name: CuRobo directory
+        - name: Directories
           ansible.builtin.file:
-            path: "{{ ps_curobo_dir }}"
+            path: "{{ item }}"
             state: directory
             owner: "{{ planserver_user }}"
             mode: "0755"
-          when: ps_curobo_build | bool
+          loop:
+            - "{{ planserver_dir }}"
+            - "{{ planserver_esdf_cache }}"
 
-        - name: Checkout cuRobo {{ curobo_ref }}
-          ansible.builtin.git:
-            repo: "{{ curobo_repo }}"
-            dest: "{{ ps_curobo_dir }}/src"
-            version: "{{ curobo_ref }}"
-            force: true
-          become: true
-          become_user: "{{ planserver_user }}"
-          register: ps_curobo_git
-          when: ps_curobo_build | bool
+        # ------------------------------------------------------------ 2. Code
+        - name: Clone or update the planner
+          when: planner_checkout | string | trim | length == 0
+          block:
+            - name: Repository address (with the token for a private repository)
+              ansible.builtin.set_fact:
+                ps_repo_url: >-
+                  {{ planner_repo | regex_replace('^https://', 'https://x-access-token:' ~ (planner_git_token | trim) ~ '@')
+                     if (planner_git_token | trim | length > 0) else planner_repo }}
+              no_log: true
 
-        # The environment is rebuilt only when one of these changed (or it is missing).
-        - name: What the cuRobo environment is built from
-          ansible.builtin.set_fact:
-            ps_curobo_marker: >-
-              curobo={{ ps_curobo_git.after | default('') }} python={{ curobo_python_version }}
-              torch={{ curobo_torch }} index={{ curobo_torch_index }} extra={{ curobo_cuda_extra }}
-          when: ps_curobo_build | bool
+            - name: Checkout {{ planner_ref }}
+              ansible.builtin.git:
+                repo: "{{ ps_repo_url }}"
+                dest: "{{ ps_planner_dir }}"
+                version: "{{ planner_ref }}"
+                force: true
+              become: true
+              become_user: "{{ planserver_user }}"
+              register: ps_git
+              no_log: "{{ planner_git_token | trim | length > 0 }}"
 
-        - name: What the existing cuRobo environment was built from
-          ansible.builtin.command: "cat {{ ps_curobo_dir }}/venv/.surf-build"
-          register: ps_curobo_marker_old
+            # The token must not stay in .git/config on the workspace.
+            - name: Remove the token from the checkout
+              ansible.builtin.command: "git -C {{ ps_planner_dir }} remote set-url origin {{ planner_repo }}"  # noqa: command-instead-of-module
+              become: true
+              become_user: "{{ planserver_user }}"
+              changed_when: false
+
+          # no_log hides why a clone fails. Ask GitHub directly and show the answer with the
+          # token blanked out, so a failed workspace says what to fix.
+          rescue:
+            - name: Ask GitHub whether the token can read {{ planner_ref }}
+              ansible.builtin.command:
+                argv: [git, ls-remote, "{{ ps_repo_url }}", "{{ planner_ref }}"]
+              environment: { GIT_TERMINAL_PROMPT: "0" }
+              register: ps_git_probe
+              changed_when: false
+              failed_when: false
+              no_log: true
+
+            - name: Why the checkout failed (token removed)
+              ansible.builtin.fail:
+                msg: >-
+                  Checkout of {{ planner_ref }} from {{ planner_repo }} as {{ planserver_user }} failed.
+                  git ls-remote rc={{ ps_git_probe.rc | default('?') }}:
+                  {{ ((ps_git_probe.stderr | default('')) ~ ' ' ~ (ps_git_probe.stdout | default('')))
+                     | replace((planner_git_token | trim) if (planner_git_token | trim | length > 0) else '\x00', '***')
+                     | trim | truncate(400) }}.
+                  Empty output with rc=0 = the ref does not exist; rc=128 "Authentication failed" or
+                  "not found" = the planner_git_token co-secret is wrong, expired or has no access.
+                  Otherwise the checkout itself failed (rights on {{ ps_planner_dir }}, disk).
+
+        - name: Check that the checkout has the plan server
+          ansible.builtin.stat: { path: "{{ ps_planner_dir }}/scripts/planserver.py" }
+          register: ps_script
+
+        - name: Stop when it does not
+          ansible.builtin.fail:
+            msg: >-
+              {{ ps_planner_dir }}/scripts/planserver.py is missing: planner_ref '{{ planner_ref }}'
+              (or the checkout in planner_checkout) is older than the plan server.
+          when: not ps_script.stat.exists
+
+        - name: Commit that is served
+          ansible.builtin.command: "git -c safe.directory={{ ps_planner_dir }} -C {{ ps_planner_dir }} rev-parse --short HEAD"  # noqa: command-instead-of-module
+          register: ps_commit
           changed_when: false
           failed_when: false
-          when: ps_curobo_build | bool
 
-        - name: Remove a cuRobo environment built from something else
-          ansible.builtin.file:
-            path: "{{ ps_curobo_dir }}/venv"
-            state: absent
-          register: ps_curobo_removed
-          when:
-            - ps_curobo_build | bool
-            - (ps_curobo_marker_old.stdout | default('') | trim) != (ps_curobo_marker | trim)
+        # ------------------------------------------------------------ 3. Python environment
+        # uv in its own venv (no curl | sh); the planner's lockfile decides the versions.
+        - name: Install uv
+          ansible.builtin.pip:
+            name: uv
+            virtualenv: "{{ planserver_dir }}/uv"
+            virtualenv_command: python3 -m venv
+          become: true
+          become_user: "{{ planserver_user }}"
 
-        # First run: downloads torch with its CUDA libraries (several GB, minutes).
-        - name: Build the cuRobo environment
-          ansible.builtin.shell: |
-            set -euxo pipefail
-            uv="{{ ps_uv }}"
-            py="{{ ps_curobo_dir }}/venv/bin/python"
-            "$uv" venv --python "{{ curobo_python_version }}" "{{ ps_curobo_dir }}/venv"
-            "$uv" pip install --python "$py" --extra-index-url "{{ curobo_torch_index }}" "{{ curobo_torch }}"
-            "$uv" pip install --python "$py" setuptools setuptools_scm wheel
-            "$uv" pip install --python "$py" --no-build-isolation -e "{{ ps_curobo_dir }}/src[{{ curobo_cuda_extra }}]"
-            # What the curobo scripts of the planner import besides torch (reproduceren.qmd).
-            "$uv" pip install --python "$py" numpy scipy "zarr>=3" pyyaml
-            printf '%s\n' "{{ ps_curobo_marker | trim }}" > "{{ ps_curobo_dir }}/venv/.surf-build"
-          args:
-            executable: /bin/bash
+        # UV_PROJECT_ENVIRONMENT keeps the environment in planserver_dir, also when the
+        # code is a checkout that belongs to someone else (planner_checkout).
+        - name: Python environment from the lockfile (first run downloads torch; several minutes)
+          ansible.builtin.command:
+            cmd: "{{ ps_uv }} sync --frozen --no-default-groups"
+            chdir: "{{ ps_planner_dir }}"
           environment:
+            UV_PROJECT_ENVIRONMENT: "{{ ps_venv }}"
             UV_CACHE_DIR: "{{ planserver_dir }}/uv-cache"
             UV_PYTHON_INSTALL_DIR: "{{ planserver_dir }}/python"
             HOME: "{{ planserver_dir }}"
           become: true
           become_user: "{{ planserver_user }}"
-          register: ps_curobo_env
-          changed_when: true
-          when:
-            - ps_curobo_build | bool
-            - (ps_curobo_marker_old.stdout | default('') | trim) != (ps_curobo_marker | trim)
+          register: ps_sync
+          changed_when: "'Installed' in ps_sync.stderr or 'Uninstalled' in ps_sync.stderr"
 
-        # As the service user: a reused environment under a home directory (0750) or with
-        # a Python that links into someone else's uv directory fails here, not in systemd.
-        - name: Check the cuRobo environment as the service user
-          ansible.builtin.command:
-            cmd: >-
-              {{ ps_curobo_python }} -c "import torch, curobo, planner.data.curobo;
-              print('torch', torch.__version__, 'cuda', torch.version.cuda, 'gpu', torch.cuda.is_available(),
-              'curobo', curobo.__version__)"
-            chdir: "{{ ps_planner_dir }}"
-          environment:
-            PYTHONPATH: "{{ ps_planner_dir }}/src"
-            HOME: "{{ planserver_dir }}"
-          become: true
-          become_user: "{{ planserver_user }}"
-          register: ps_curobo_check
-          changed_when: false
-          failed_when: false
+        # ------------------------------------------------------------ 3b. cuRobo (gpu mode)
+        # cuRobo has its own Python environment, never mixed with the planner's (CLAUDE.md of
+        # the planner): only planner/data/curobo.py imports it, in a worker process that the
+        # server starts with planserver_curobo_python_flag. Without CUROBO_USE_PYBIND cuRobo
+        # compiles its kernels at run time (cuda-core), so no nvcc is needed here.
+        - name: CuRobo environment (gpu mode)
+          when: ps_mode == 'gpu'
+          block:
+            - name: Check that the planner has the cuRobo backend
+              ansible.builtin.command:
+                cmd: grep -rlF -e "{{ planserver_curobo_python_flag }}" scripts/planserver.py src/planner/planserver
+                chdir: "{{ ps_planner_dir }}"
+              register: ps_backend_check
+              changed_when: false
+              failed_when: false
 
-        - name: Stop when the cuRobo environment does not work
+            - name: Stop when it does not (planserver_mode=gpu)
+              ansible.builtin.fail:
+                msg: >-
+                  {{ ps_planner_dir }} has no {{ planserver_curobo_python_flag }} for
+                  scripts/planserver.py serve: planner_ref '{{ planner_ref }}' (or the checkout in
+                  planner_checkout) is older than the cuRobo backend of the plan server. Use a ref
+                  with the backend, or planserver_mode=auto or cpu.
+              when:
+                - ps_backend_check.rc != 0
+                - ps_mode_asked == 'gpu'
+
+            # auto: a GPU flavour with a planner without the backend still gets a working
+            # server. The remaining tasks of this block skip themselves (ps_mode is cpu now).
+            - name: Fall back to the cpu mode when it does not (planserver_mode=auto)
+              ansible.builtin.set_fact:
+                ps_mode: "cpu"
+                ps_curobo_rw: false
+                ps_gpu_fallback: true
+              when:
+                - ps_backend_check.rc != 0
+                - ps_mode_asked == 'auto'
+
+            - name: Driver state
+              ansible.builtin.command: nvidia-smi
+              register: ps_nvidia_smi
+              changed_when: false
+              failed_when: false
+
+            - name: Whether the driver is loaded, and the CUDA version it supports
+              ansible.builtin.set_fact:
+                ps_gpu_ready: "{{ ps_nvidia_smi.rc == 0 }}"
+                ps_driver_cuda: >-
+                  {{ (ps_nvidia_smi.stdout | default('') | regex_search('CUDA Version: *([0-9]+)', '\\1')
+                      | default([''], true)) | first }}
+
+            - name: Stop when the driver is too old for a CUDA 13 build
+              ansible.builtin.fail:
+                msg: >-
+                  The NVIDIA driver supports CUDA {{ ps_driver_cuda }}, the cuRobo environment is built
+                  for CUDA 13 (curobo_cuda_extra={{ curobo_cuda_extra }}, {{ curobo_torch_index }}),
+                  which needs driver 580 or newer. Install a newer driver (the CUDA component of the
+                  catalog item), or build for CUDA 12: curobo_cuda_extra=cu12 and a cu12x torch index.
+              when:
+                - ps_gpu_ready | bool
+                - curobo_cuda_extra == 'cu13'
+                - ps_driver_cuda | length > 0
+                - ps_driver_cuda | int < 13
+
+            - name: Warn when the driver is not loaded yet
+              ansible.builtin.debug:
+                msg: >-
+                  WARNING: nvidia-smi does not work yet ({{ ((ps_nvidia_smi.stdout_lines | default([])) + (ps_nvidia_smi.stderr_lines | default([])))
+                  | first | default('rc=' ~ ps_nvidia_smi.rc) }}). Usually the driver of the CUDA
+                  component only loads after a reboot. The plan server is installed but not started;
+                  reboot once (sudo systemctl reboot -i) and it starts at boot.
+              when: not (ps_gpu_ready | bool)
+
+            - name: CuRobo directory
+              ansible.builtin.file:
+                path: "{{ ps_curobo_dir }}"
+                state: directory
+                owner: "{{ planserver_user }}"
+                mode: "0755"
+              when: ps_curobo_build | bool
+
+            - name: Checkout cuRobo {{ curobo_ref }}
+              ansible.builtin.git:
+                repo: "{{ curobo_repo }}"
+                dest: "{{ ps_curobo_dir }}/src"
+                version: "{{ curobo_ref }}"
+                force: true
+              become: true
+              become_user: "{{ planserver_user }}"
+              register: ps_curobo_git
+              when: ps_curobo_build | bool
+
+            # The environment is rebuilt only when one of these changed (or it is missing).
+            - name: What the cuRobo environment is built from
+              ansible.builtin.set_fact:
+                ps_curobo_marker: >-
+                  curobo={{ ps_curobo_git.after | default('') }} python={{ curobo_python_version }}
+                  torch={{ curobo_torch }} index={{ curobo_torch_index }} extra={{ curobo_cuda_extra }}
+              when: ps_curobo_build | bool
+
+            - name: What the existing cuRobo environment was built from
+              ansible.builtin.command: "cat {{ ps_curobo_dir }}/venv/.surf-build"
+              register: ps_curobo_marker_old
+              changed_when: false
+              failed_when: false
+              when: ps_curobo_build | bool
+
+            - name: Remove a cuRobo environment built from something else
+              ansible.builtin.file:
+                path: "{{ ps_curobo_dir }}/venv"
+                state: absent
+              register: ps_curobo_removed
+              when:
+                - ps_curobo_build | bool
+                - (ps_curobo_marker_old.stdout | default('') | trim) != (ps_curobo_marker | trim)
+
+            # First run: downloads torch with its CUDA libraries (several GB, minutes).
+            - name: Build the cuRobo environment
+              ansible.builtin.shell: |
+                set -euxo pipefail
+                uv="{{ ps_uv }}"
+                py="{{ ps_curobo_dir }}/venv/bin/python"
+                "$uv" venv --python "{{ curobo_python_version }}" "{{ ps_curobo_dir }}/venv"
+                "$uv" pip install --python "$py" --extra-index-url "{{ curobo_torch_index }}" "{{ curobo_torch }}"
+                "$uv" pip install --python "$py" setuptools setuptools_scm wheel
+                "$uv" pip install --python "$py" --no-build-isolation -e "{{ ps_curobo_dir }}/src[{{ curobo_cuda_extra }}]"
+                # What the curobo scripts of the planner import besides torch (reproduceren.qmd).
+                "$uv" pip install --python "$py" numpy scipy "zarr>=3" pyyaml
+                printf '%s\n' "{{ ps_curobo_marker | trim }}" > "{{ ps_curobo_dir }}/venv/.surf-build"
+              args:
+                executable: /bin/bash
+              environment:
+                UV_CACHE_DIR: "{{ planserver_dir }}/uv-cache"
+                UV_PYTHON_INSTALL_DIR: "{{ planserver_dir }}/python"
+                HOME: "{{ planserver_dir }}"
+              become: true
+              become_user: "{{ planserver_user }}"
+              register: ps_curobo_env
+              changed_when: true
+              when:
+                - ps_curobo_build | bool
+                - (ps_curobo_marker_old.stdout | default('') | trim) != (ps_curobo_marker | trim)
+
+            # As the service user: a reused environment under a home directory (0750) or with
+            # a Python that links into someone else's uv directory fails here, not in systemd.
+            - name: Check the cuRobo environment as the service user
+              ansible.builtin.command:
+                cmd: >-
+                  {{ ps_curobo_python }} -c "import torch, curobo, planner.data.curobo;
+                  print('torch', torch.__version__, 'cuda', torch.version.cuda, 'gpu', torch.cuda.is_available(),
+                  'curobo', curobo.__version__)"
+                chdir: "{{ ps_planner_dir }}"
+              environment:
+                PYTHONPATH: "{{ ps_planner_dir }}/src"
+                HOME: "{{ planserver_dir }}"
+              become: true
+              become_user: "{{ planserver_user }}"
+              register: ps_curobo_check
+              changed_when: false
+              failed_when: false
+
+            - name: Stop when the cuRobo environment does not work
+              ansible.builtin.fail:
+                msg:
+                  - "{{ ps_curobo_python }} cannot import torch, curobo and planner.data.curobo as {{ planserver_user }}:"
+                  - "{{ (ps_curobo_check.stderr_lines | default([]))[-3:] | join(' / ') or ps_curobo_check.msg | default('') }}"
+                  - >-
+                    {{ 'A reused environment (planserver_curobo_python) must be readable and executable for '
+                       ~ planserver_user ~ ', including its directories and the Python it links to; one under
+                       /home usually is not. Leave planserver_curobo_python empty to build one.'
+                       if not (ps_curobo_build | bool) else 'Check the output of "Build the cuRobo environment".' }}
+              when:
+                - ps_curobo_check.rc != 0
+                - ps_gpu_ready | bool
+
+            - name: Warn when the check could not run without a driver
+              ansible.builtin.debug:
+                msg: >-
+                  WARNING: the cuRobo environment could not be checked without a loaded driver
+                  ({{ (ps_curobo_check.stderr_lines | default(['?']))[-1:] | join('') }}). It is checked
+                  again when the component runs after the reboot.
+              when:
+                - ps_curobo_check.rc != 0
+                - not (ps_gpu_ready | bool)
+
+            - name: Report the cuRobo environment
+              ansible.builtin.debug:
+                msg: "cuRobo worker: {{ ps_curobo_python }} ({{ ps_curobo_check.stdout | default('') | trim }})"
+              when: ps_curobo_check.rc == 0
+
+        # ------------------------------------------------------------ 4. What it serves
+        - name: Check the block directories
+          ansible.builtin.stat: { path: "{{ item }}/problems" }
+          loop: "{{ ps_blocks }}"
+          register: ps_block_stat
+
+        - name: Stop on a block directory without problems/
           ansible.builtin.fail:
+            msg: "{{ item.item }} is not a block directory (no problems/ in it). Check planserver_blocks and planserver_data_root."
+          loop: "{{ ps_block_stat.results }}"
+          loop_control: { label: "{{ item.item }}" }
+          when: not (item.stat.isdir | default(false))
+
+        - name: Check the checkpoint
+          ansible.builtin.stat: { path: "{{ ps_checkpoint }}" }
+          register: ps_checkpoint_stat
+          when: ps_checkpoint | length > 0
+
+        - name: Stop on a missing checkpoint
+          ansible.builtin.fail:
+            msg: "Checkpoint {{ ps_checkpoint }} does not exist. Check planserver_checkpoint and planserver_data_root."
+          when:
+            - ps_checkpoint | length > 0
+            - not ps_checkpoint_stat.stat.exists
+
+        # ------------------------------------------------------------ 5. Service
+        - name: Command line client (planserver health | worlds | plan ...)
+          ansible.builtin.template:
+            src: templates/planserver.sh.j2
+            dest: /usr/local/bin/planserver
+            mode: "0755"
+
+        - name: Warm-up after every start (gpu mode)
+          ansible.builtin.template:
+            src: templates/planserver-warmup.py.j2
+            dest: "{{ planserver_dir }}/warmup.py"
+            mode: "0644"
+          register: ps_warmup
+          when: ps_mode == 'gpu'
+
+        - name: No warm-up in the cpu mode
+          ansible.builtin.file:
+            path: "{{ planserver_dir }}/warmup.py"
+            state: absent
+          when: ps_mode != 'gpu'
+
+        - name: Install the plan server systemd unit
+          ansible.builtin.template:
+            src: templates/planserver.service.j2
+            dest: /etc/systemd/system/planserver.service
+            mode: "0644"
+          register: ps_unit
+
+        # gpu mode with a driver that is not loaded yet: enabled, so it starts after the reboot.
+        - name: Whether the plan server can start now
+          ansible.builtin.set_fact:
+            ps_can_start: "{{ ps_mode != 'gpu' or (ps_gpu_ready | default(false) | bool) }}"
+            ps_restart: >-
+              {{ ps_unit.changed or ps_sync.changed or (ps_git.changed | default(false))
+                 or (ps_warmup.changed | default(false)) or (ps_curobo_env.changed | default(false)) }}
+
+        - name: Enable + (re)start planserver.service (autostart)
+          ansible.builtin.systemd:
+            name: planserver.service
+            enabled: true
+            daemon_reload: true
+            state: "{{ 'restarted' if ps_restart | bool else 'started' }}"
+          when:
+            - planserver_autostart | bool
+            - ps_can_start | bool
+          tags: [service]
+
+        - name: Enable planserver.service for the next boot (driver not loaded yet)
+          ansible.builtin.systemd:
+            name: planserver.service
+            enabled: true
+            daemon_reload: true
+          when:
+            - planserver_autostart | bool
+            - not (ps_can_start | bool)
+          tags: [service]
+
+        - name: Install planserver.service without starting it (on demand)
+          ansible.builtin.systemd:
+            name: planserver.service
+            enabled: false
+            daemon_reload: true
+          when: not (planserver_autostart | bool)
+          tags: [service]
+
+        # gpu: also cuRobo among the planners. The start already waited for the warm-up.
+        - name: Wait until the plan server answers
+          ansible.builtin.uri:
+            url: "http://{{ '127.0.0.1' if planserver_bind_address == '0.0.0.0' else planserver_bind_address }}:{{ planserver_port }}/health"
+            return_content: true
+          register: ps_health
+          until: >-
+            ps_health.status == 200
+            and (ps_mode != 'gpu' or 'curobo' in (ps_health.json.planners | default([])))
+          retries: "{{ 60 if ps_mode == 'gpu' else 30 }}"
+          delay: "{{ 5 if ps_mode == 'gpu' else 2 }}"
+          when:
+            - planserver_autostart | bool
+            - ps_can_start | bool
+          tags: [service]
+
+        - name: How to reach the plan server
+          ansible.builtin.debug:
             msg:
-              - "{{ ps_curobo_python }} cannot import torch, curobo and planner.data.curobo as {{ planserver_user }}:"
-              - "{{ (ps_curobo_check.stderr_lines | default([]))[-3:] | join(' / ') or ps_curobo_check.msg | default('') }}"
+              - "Mode: {{ ps_mode }}{{ (' (auto: ' ~ (ps_pci_gpus.stdout_lines | length) ~ ' NVIDIA GPU(s))') if ps_mode_asked == 'auto' else '' }}"
+              - "{{ 'Starts at boot.' if (planserver_autostart | bool) else 'On demand: sudo systemctl start planserver (stop: sudo systemctl stop planserver)' }}"
+              - "{{ ('cuRobo worker: ' ~ ps_curobo_python) if ps_mode == 'gpu' else 'No cuRobo (cpu mode).' }}"
               - >-
-                {{ 'A reused environment (planserver_curobo_python) must be readable and executable for '
-                   ~ planserver_user ~ ', including its directories and the Python it links to; one under
-                   /home usually is not. Leave planserver_curobo_python empty to build one.'
-                   if not (ps_curobo_build | bool) else 'Check the output of "Build the cuRobo environment".' }}
-          when:
-            - ps_curobo_check.rc != 0
-            - ps_gpu_ready | bool
+                {{ ('WARNING: this workspace has a GPU, but planner_ref ' ~ planner_ref ~ ' has no '
+                    ~ planserver_curobo_python_flag ~ ' (no cuRobo backend yet), so it serves in the cpu mode.')
+                   if ps_gpu_fallback | default(false) else '' }}
+              - >-
+                {{ 'NOT STARTED: the NVIDIA driver is not loaded yet. Reboot once (sudo systemctl reboot -i); it starts at boot.'
+                   if not (ps_can_start | bool) else '' }}
+              - "URL: http://{{ planserver_bind_address }}:{{ planserver_port }} (planner {{ ps_commit.stdout | default('?') }} from {{ ps_planner_dir }})"
+              - >-
+                {{ ('Planners: ' ~ (ps_health.json.planners | join(', ')) ~ '; worlds: ' ~ ps_health.json.n_worlds)
+                   if (ps_health.json is defined) else 'Not started, so not checked.' }}
+              - "Blocks: {{ ps_blocks | join(' ') if ps_blocks | length > 0 else 'the fixture in the repository (set planserver_blocks for the dataset)' }}"
+              - "Model: {{ ps_checkpoint if ps_checkpoint | length > 0 else 'none (set planserver_checkpoint); only stored trajectories' }}"
+              - "On the workspace: planserver health | planserver worlds | planserver plan --world <id> --goal <n>"
+              - "Logs: journalctl -u planserver -f"
 
-        - name: Warn when the check could not run without a driver
+      rescue:
+        - name: Reason of the failure (token blanked out)
+          ansible.builtin.set_fact:
+            ps_failure: >-
+              Task "{{ ansible_failed_task.name | default('?') }}" failed:
+              {{ ([ansible_failed_result.msg | default(''),
+                   ansible_failed_result.stderr | default(''),
+                   ansible_failed_result.stdout | default('')] | join(' ') | trim
+                  | replace((planner_git_token | default('') | trim)
+                            if (planner_git_token | default('') | trim | length > 0) else '\x00', '***'))
+                 | truncate(3000) }}
+
+        - name: Directory for the note
+          ansible.builtin.file: { path: /opt/planserver, state: directory, mode: "0755" }
+
+        - name: Keep the reason on the workspace
+          ansible.builtin.copy:
+            dest: /opt/planserver/INSTALL-FAILED.txt
+            mode: "0644"
+            content: "{{ ps_failure }}\n"
+
+        - name: Show the reason at SSH login
+          ansible.builtin.copy:
+            dest: /etc/update-motd.d/98-planserver-failed
+            mode: "0755"
+            content: |
+              #!/bin/sh
+              [ -f /opt/planserver/INSTALL-FAILED.txt ] || exit 0
+              echo ""
+              echo "  [planserver] install failed, see /opt/planserver/INSTALL-FAILED.txt:"
+              fold -w 100 /opt/planserver/INSTALL-FAILED.txt | sed 's/^/  /'
+              echo ""
+
+        - name: Report it
           ansible.builtin.debug:
-            msg: >-
-              WARNING: the cuRobo environment could not be checked without a loaded driver
-              ({{ (ps_curobo_check.stderr_lines | default(['?']))[-1:] | join('') }}). It is checked
-              again when the component runs after the reboot.
-          when:
-            - ps_curobo_check.rc != 0
-            - not (ps_gpu_ready | bool)
+            msg: "PLAN SERVER NOT INSTALLED. {{ ps_failure }}"
 
-        - name: Report the cuRobo environment
-          ansible.builtin.debug:
-            msg: "cuRobo worker: {{ ps_curobo_python }} ({{ ps_curobo_check.stdout | default('') | trim }})"
-          when: ps_curobo_check.rc == 0
-
-    # ------------------------------------------------------------ 4. What it serves
-    - name: Check the block directories
-      ansible.builtin.stat: { path: "{{ item }}/problems" }
-      loop: "{{ ps_blocks }}"
-      register: ps_block_stat
-
-    - name: Stop on a block directory without problems/
-      ansible.builtin.fail:
-        msg: "{{ item.item }} is not a block directory (no problems/ in it). Check planserver_blocks and planserver_data_root."
-      loop: "{{ ps_block_stat.results }}"
-      loop_control: { label: "{{ item.item }}" }
-      when: not (item.stat.isdir | default(false))
-
-    - name: Check the checkpoint
-      ansible.builtin.stat: { path: "{{ ps_checkpoint }}" }
-      register: ps_checkpoint_stat
-      when: ps_checkpoint | length > 0
-
-    - name: Stop on a missing checkpoint
-      ansible.builtin.fail:
-        msg: "Checkpoint {{ ps_checkpoint }} does not exist. Check planserver_checkpoint and planserver_data_root."
-      when:
-        - ps_checkpoint | length > 0
-        - not ps_checkpoint_stat.stat.exists
-
-    # ------------------------------------------------------------ 5. Service
-    - name: Command line client (planserver health | worlds | plan ...)
-      ansible.builtin.template:
-        src: templates/planserver.sh.j2
-        dest: /usr/local/bin/planserver
-        mode: "0755"
-
-    - name: Warm-up after every start (gpu mode)
-      ansible.builtin.template:
-        src: templates/planserver-warmup.py.j2
-        dest: "{{ planserver_dir }}/warmup.py"
-        mode: "0644"
-      register: ps_warmup
-      when: ps_mode == 'gpu'
-
-    - name: No warm-up in the cpu mode
-      ansible.builtin.file:
-        path: "{{ planserver_dir }}/warmup.py"
-        state: absent
-      when: ps_mode != 'gpu'
-
-    - name: Install the plan server systemd unit
-      ansible.builtin.template:
-        src: templates/planserver.service.j2
-        dest: /etc/systemd/system/planserver.service
-        mode: "0644"
-      register: ps_unit
-
-    # gpu mode with a driver that is not loaded yet: enabled, so it starts after the reboot.
-    - name: Whether the plan server can start now
-      ansible.builtin.set_fact:
-        ps_can_start: "{{ ps_mode != 'gpu' or (ps_gpu_ready | default(false) | bool) }}"
-        ps_restart: >-
-          {{ ps_unit.changed or ps_sync.changed or (ps_git.changed | default(false))
-             or (ps_warmup.changed | default(false)) or (ps_curobo_env.changed | default(false)) }}
-
-    - name: Enable + (re)start planserver.service (autostart)
-      ansible.builtin.systemd:
-        name: planserver.service
-        enabled: true
-        daemon_reload: true
-        state: "{{ 'restarted' if ps_restart | bool else 'started' }}"
-      when:
-        - planserver_autostart | bool
-        - ps_can_start | bool
-      tags: [service]
-
-    - name: Enable planserver.service for the next boot (driver not loaded yet)
-      ansible.builtin.systemd:
-        name: planserver.service
-        enabled: true
-        daemon_reload: true
-      when:
-        - planserver_autostart | bool
-        - not (ps_can_start | bool)
-      tags: [service]
-
-    - name: Install planserver.service without starting it (on demand)
-      ansible.builtin.systemd:
-        name: planserver.service
-        enabled: false
-        daemon_reload: true
-      when: not (planserver_autostart | bool)
-      tags: [service]
-
-    # gpu: also cuRobo among the planners. The start already waited for the warm-up.
-    - name: Wait until the plan server answers
-      ansible.builtin.uri:
-        url: "http://{{ '127.0.0.1' if planserver_bind_address == '0.0.0.0' else planserver_bind_address }}:{{ planserver_port }}/health"
-        return_content: true
-      register: ps_health
-      until: >-
-        ps_health.status == 200
-        and (ps_mode != 'gpu' or 'curobo' in (ps_health.json.planners | default([])))
-      retries: "{{ 60 if ps_mode == 'gpu' else 30 }}"
-      delay: "{{ 5 if ps_mode == 'gpu' else 2 }}"
-      when:
-        - planserver_autostart | bool
-        - ps_can_start | bool
-      tags: [service]
-
-    - name: How to reach the plan server
-      ansible.builtin.debug:
-        msg:
-          - "Mode: {{ ps_mode }}{{ (' (auto: ' ~ (ps_pci_gpus.stdout_lines | length) ~ ' NVIDIA GPU(s))') if ps_mode_asked == 'auto' else '' }}"
-          - "{{ 'Starts at boot.' if (planserver_autostart | bool) else 'On demand: sudo systemctl start planserver (stop: sudo systemctl stop planserver)' }}"
-          - "{{ ('cuRobo worker: ' ~ ps_curobo_python) if ps_mode == 'gpu' else 'No cuRobo (cpu mode).' }}"
-          - >-
-            {{ ('WARNING: this workspace has a GPU, but planner_ref ' ~ planner_ref ~ ' has no '
-                ~ planserver_curobo_python_flag ~ ' (no cuRobo backend yet), so it serves in the cpu mode.')
-               if ps_gpu_fallback | default(false) else '' }}
-          - >-
-            {{ 'NOT STARTED: the NVIDIA driver is not loaded yet. Reboot once (sudo systemctl reboot -i); it starts at boot.'
-               if not (ps_can_start | bool) else '' }}
-          - "URL: http://{{ planserver_bind_address }}:{{ planserver_port }} (planner {{ ps_commit.stdout | default('?') }} from {{ ps_planner_dir }})"
-          - >-
-            {{ ('Planners: ' ~ (ps_health.json.planners | join(', ')) ~ '; worlds: ' ~ ps_health.json.n_worlds)
-               if (ps_health.json is defined) else 'Not started, so not checked.' }}
-          - "Blocks: {{ ps_blocks | join(' ') if ps_blocks | length > 0 else 'the fixture in the repository (set planserver_blocks for the dataset)' }}"
-          - "Model: {{ ps_checkpoint if ps_checkpoint | length > 0 else 'none (set planserver_checkpoint); only stored trajectories' }}"
-          - "On the workspace: planserver health | planserver worlds | planserver plan --world <id> --goal <n>"
-          - "Logs: journalctl -u planserver -f"
+        - name: Fail the workspace when fail-soft is off
+          ansible.builtin.fail:
+            msg: "{{ ps_failure }}"
+          when: not (planserver_fail_soft | bool)
