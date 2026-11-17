@@ -241,6 +241,30 @@
           become_user: "{{ planserver_user }}"
           changed_when: false
 
+      # no_log hides why a clone fails. Ask GitHub directly and show the answer with the
+      # token blanked out, so a failed workspace says what to fix.
+      rescue:
+        - name: Ask GitHub whether the token can read {{ planner_ref }}
+          ansible.builtin.command:
+            argv: [git, ls-remote, "{{ ps_repo_url }}", "{{ planner_ref }}"]
+          environment: { GIT_TERMINAL_PROMPT: "0" }
+          register: ps_git_probe
+          changed_when: false
+          failed_when: false
+          no_log: true
+
+        - name: Why the checkout failed (token removed)
+          ansible.builtin.fail:
+            msg: >-
+              Checkout of {{ planner_ref }} from {{ planner_repo }} as {{ planserver_user }} failed.
+              git ls-remote rc={{ ps_git_probe.rc | default('?') }}:
+              {{ ((ps_git_probe.stderr | default('')) ~ ' ' ~ (ps_git_probe.stdout | default('')))
+                 | replace((planner_git_token | trim) if (planner_git_token | trim | length > 0) else '\x00', '***')
+                 | trim | truncate(400) }}.
+              Empty output with rc=0 = the ref does not exist; rc=128 "Authentication failed" or
+              "not found" = the planner_git_token co-secret is wrong, expired or has no access.
+              Otherwise the checkout itself failed (rights on {{ ps_planner_dir }}, disk).
+
     - name: Check that the checkout has the plan server
       ansible.builtin.stat: { path: "{{ ps_planner_dir }}/scripts/planserver.py" }
       register: ps_script
