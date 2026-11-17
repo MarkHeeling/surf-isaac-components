@@ -6,10 +6,13 @@
 # executes it. The server never moves anything itself.
 #
 # planserver_mode cpu: stored expert trajectories and the trained model on the CPU.
-# planserver_mode gpu: reserved for cuRobo and model + cuRobo on one GPU.
+# planserver_mode gpu: adds cuRobo (curobo, model_curobo). cuRobo runs as a worker in
+#   its own Python environment (built here, or an existing one via planserver_curobo_python).
+# planserver_mode auto (default): gpu when the workspace has an NVIDIA GPU, else cpu,
+#   so one catalog item serves CPU and GPU flavours.
 #
 # The server has no login: it listens on the WireGuard tunnel IP only. Catalog
-# item order: wireguard -> (universal-robots-ursim) -> paradaim-planserver.
+# item order: (CUDA component ->) wireguard -> (universal-robots-ursim) -> paradaim-planserver.
 ---
 - name: Paradaim plan server
   hosts: localhost
@@ -17,7 +20,7 @@
   become: true
 
   vars:
-    planserver_mode: "cpu"              # "cpu" | "gpu" (gpu is not available yet)
+    planserver_mode: "auto"             # "auto" | "cpu" | "gpu"; auto = gpu when an NVIDIA GPU is present
 
     # --- The planner code ---------------------------------------------------------
     planner_repo: "https://github.com/MarkHeeling/planner.git"
@@ -61,23 +64,72 @@
 
     planserver_user: "planserver"       # system user the service runs as
 
+    # Extra arguments for `planserver.py serve`, as one string (both modes). Empty = none.
+    planserver_extra_args: ""
+
+    # --- gpu mode: cuRobo -------------------------------------------------------------
+    # Python of an existing cuRobo environment to use instead of building one, e.g.
+    # /data/isaac-data/curobo/venv/bin/python. The service user must be able to run it
+    # (a venv under a home directory usually is not: /home/* is 0750). Empty = build one
+    # in planserver_curobo_dir.
+    planserver_curobo_python: ""
+    # How the planner's serve command takes that Python (the cuRobo backend of the planner).
+    planserver_curobo_python_flag: "--curobo-python"
+    # Where the built cuRobo environment goes: source in src/, environment in venv/.
+    planserver_curobo_dir: "{{ planserver_dir }}/curobo"
+    # What is built (docs/bijlagen/reproduceren.qmd of the planner). 78fd485f is cuRobo
+    # 0.8.0.post1.dev43, the version in the provenance of the v5 expert data. A full clone,
+    # because cuRobo derives its version from the git history.
+    curobo_repo: "https://github.com/NVlabs/curobo.git"
+    curobo_ref: "78fd485f"
+    curobo_python_version: "3.11"
+    curobo_torch: "torch>=2.13"
+    curobo_torch_index: "https://download.pytorch.org/whl/cu130"
+    curobo_cuda_extra: "cu13"           # cuRobo extra: cu13 (driver >= 580) or cu12
+    # GPU(s) the server sees, e.g. "0". Empty = all.
+    planserver_cuda_visible_devices: ""
+    # Seconds the warm-up plan after a start may take (first start compiles the kernels).
+    planserver_warmup_timeout: 600
+
   tasks:
     # ------------------------------------------------------------ 0. Parameters
     - name: Normalise the mode
       ansible.builtin.set_fact:
-        ps_mode: "{{ planserver_mode | string | trim | lower }}"
+        ps_mode_asked: "{{ planserver_mode | string | trim | lower }}"
 
     - name: Stop on an unknown mode
       ansible.builtin.fail:
-        msg: "planserver_mode must be cpu or gpu, not '{{ planserver_mode }}'."
-      when: ps_mode not in ['cpu', 'gpu']
+        msg: "planserver_mode must be auto, cpu or gpu, not '{{ planserver_mode }}'."
+      when: ps_mode_asked not in ['auto', 'cpu', 'gpu']
 
-    - name: Stop on the gpu mode (not available yet)
+    # From the PCI bus, not nvidia-smi: right after the CUDA component installed a driver
+    # it may only load after a reboot, and the GPU is there all the same.
+    - name: NVIDIA GPUs on the PCI bus
+      ansible.builtin.shell: |
+        set -o pipefail
+        for d in /sys/bus/pci/devices/*; do
+          case "$(cat "$d/vendor"):$(cat "$d/class")" in
+            0x10de:0x0300*|0x10de:0x0302*) echo "${d##*/}" ;;
+          esac
+        done
+      args: { executable: /bin/bash }
+      register: ps_pci_gpus
+      changed_when: false
+
+    - name: Mode that is installed
+      ansible.builtin.set_fact:
+        ps_mode: >-
+          {{ ps_mode_asked if ps_mode_asked != 'auto'
+             else ('gpu' if ps_pci_gpus.stdout_lines | length > 0 else 'cpu') }}
+
+    - name: Stop on the gpu mode without a GPU
       ansible.builtin.fail:
         msg: >-
-          planserver_mode=gpu (cuRobo and model + cuRobo) is not available yet. Use cpu:
-          stored expert trajectories and the model on the CPU.
-      when: ps_mode == 'gpu'
+          planserver_mode=gpu, but this workspace has no NVIDIA GPU. Pick a GPU flavour,
+          or set planserver_mode to auto or cpu.
+      when:
+        - ps_mode == 'gpu'
+        - ps_pci_gpus.stdout_lines | length == 0
 
     - name: Paths from the parameters
       ansible.builtin.set_fact:
@@ -89,6 +141,18 @@
              if (planner_checkout | string | trim | length > 0) else planserver_dir ~ '/planner' }}
         ps_venv: "{{ planserver_dir }}/venv"
         ps_uv: "{{ planserver_dir }}/uv/bin/uv"
+        ps_curobo_dir: "{{ planserver_curobo_dir | string | trim | regex_replace('/+$', '') }}"
+        ps_curobo_build: "{{ (planserver_curobo_python | string | trim | length) == 0 }}"
+
+    - name: Python of the cuRobo worker
+      ansible.builtin.set_fact:
+        ps_curobo_python: >-
+          {{ (ps_curobo_dir ~ '/venv/bin/python') if ps_curobo_build | bool
+             else (planserver_curobo_python | string | trim) }}
+        # The service may write in a cuRobo environment it built itself (kernel caches).
+        ps_curobo_rw: >-
+          {{ ps_mode == 'gpu' and (ps_curobo_build | bool)
+             and not ps_curobo_dir.startswith(planserver_dir ~ '/') }}
 
     - name: Block directories and checkpoint as absolute paths
       ansible.builtin.set_fact:
@@ -165,13 +229,15 @@
             dest: "{{ ps_planner_dir }}"
             version: "{{ planner_ref }}"
             force: true
+          become: true
           become_user: "{{ planserver_user }}"
           register: ps_git
           no_log: "{{ planner_git_token | trim | length > 0 }}"
 
         # The token must not stay in .git/config on the workspace.
         - name: Remove the token from the checkout
-          ansible.builtin.command: "git -C {{ ps_planner_dir }} remote set-url origin {{ planner_repo }}"
+          ansible.builtin.command: "git -C {{ ps_planner_dir }} remote set-url origin {{ planner_repo }}"  # noqa: command-instead-of-module
+          become: true
           become_user: "{{ planserver_user }}"
           changed_when: false
 
@@ -187,18 +253,19 @@
       when: not ps_script.stat.exists
 
     - name: Commit that is served
-      ansible.builtin.command: "git -c safe.directory={{ ps_planner_dir }} -C {{ ps_planner_dir }} rev-parse --short HEAD"
+      ansible.builtin.command: "git -c safe.directory={{ ps_planner_dir }} -C {{ ps_planner_dir }} rev-parse --short HEAD"  # noqa: command-instead-of-module
       register: ps_commit
       changed_when: false
       failed_when: false
 
     # ------------------------------------------------------------ 3. Python environment
     # uv in its own venv (no curl | sh); the planner's lockfile decides the versions.
-    - name: uv
+    - name: Install uv
       ansible.builtin.pip:
         name: uv
         virtualenv: "{{ planserver_dir }}/uv"
         virtualenv_command: python3 -m venv
+      become: true
       become_user: "{{ planserver_user }}"
 
     # UV_PROJECT_ENVIRONMENT keeps the environment in planserver_dir, also when the
@@ -212,9 +279,187 @@
         UV_CACHE_DIR: "{{ planserver_dir }}/uv-cache"
         UV_PYTHON_INSTALL_DIR: "{{ planserver_dir }}/python"
         HOME: "{{ planserver_dir }}"
+      become: true
       become_user: "{{ planserver_user }}"
       register: ps_sync
       changed_when: "'Installed' in ps_sync.stderr or 'Uninstalled' in ps_sync.stderr"
+
+    # ------------------------------------------------------------ 3b. cuRobo (gpu mode)
+    # cuRobo has its own Python environment, never mixed with the planner's (CLAUDE.md of
+    # the planner): only planner/data/curobo.py imports it, in a worker process that the
+    # server starts with planserver_curobo_python_flag. Without CUROBO_USE_PYBIND cuRobo
+    # compiles its kernels at run time (cuda-core), so no nvcc is needed here.
+    - name: CuRobo environment (gpu mode)
+      when: ps_mode == 'gpu'
+      block:
+        - name: Check that the planner has the cuRobo backend
+          ansible.builtin.command:
+            cmd: grep -rlF -e "{{ planserver_curobo_python_flag }}" scripts/planserver.py src/planner/planserver
+            chdir: "{{ ps_planner_dir }}"
+          register: ps_backend_check
+          changed_when: false
+          failed_when: false
+
+        - name: Stop when it does not
+          ansible.builtin.fail:
+            msg: >-
+              {{ ps_planner_dir }} has no {{ planserver_curobo_python_flag }} for
+              scripts/planserver.py serve: planner_ref '{{ planner_ref }}' (or the checkout in
+              planner_checkout) is older than the cuRobo backend of the plan server. Use a ref
+              with the backend, or planserver_mode=cpu.
+          when: ps_backend_check.rc != 0
+
+        - name: Driver state
+          ansible.builtin.command: nvidia-smi
+          register: ps_nvidia_smi
+          changed_when: false
+          failed_when: false
+
+        - name: Whether the driver is loaded, and the CUDA version it supports
+          ansible.builtin.set_fact:
+            ps_gpu_ready: "{{ ps_nvidia_smi.rc == 0 }}"
+            ps_driver_cuda: >-
+              {{ (ps_nvidia_smi.stdout | default('') | regex_search('CUDA Version: *([0-9]+)', '\\1')
+                  | default([''], true)) | first }}
+
+        - name: Stop when the driver is too old for a CUDA 13 build
+          ansible.builtin.fail:
+            msg: >-
+              The NVIDIA driver supports CUDA {{ ps_driver_cuda }}, the cuRobo environment is built
+              for CUDA 13 (curobo_cuda_extra={{ curobo_cuda_extra }}, {{ curobo_torch_index }}),
+              which needs driver 580 or newer. Install a newer driver (the CUDA component of the
+              catalog item), or build for CUDA 12: curobo_cuda_extra=cu12 and a cu12x torch index.
+          when:
+            - ps_gpu_ready | bool
+            - curobo_cuda_extra == 'cu13'
+            - ps_driver_cuda | length > 0
+            - ps_driver_cuda | int < 13
+
+        - name: Warn when the driver is not loaded yet
+          ansible.builtin.debug:
+            msg: >-
+              WARNING: nvidia-smi does not work yet ({{ ((ps_nvidia_smi.stdout_lines | default([])) + (ps_nvidia_smi.stderr_lines | default([])))
+              | first | default('rc=' ~ ps_nvidia_smi.rc) }}). Usually the driver of the CUDA
+              component only loads after a reboot. The plan server is installed but not started;
+              reboot once (sudo systemctl reboot -i) and it starts at boot.
+          when: not (ps_gpu_ready | bool)
+
+        - name: CuRobo directory
+          ansible.builtin.file:
+            path: "{{ ps_curobo_dir }}"
+            state: directory
+            owner: "{{ planserver_user }}"
+            mode: "0755"
+          when: ps_curobo_build | bool
+
+        - name: Checkout cuRobo {{ curobo_ref }}
+          ansible.builtin.git:
+            repo: "{{ curobo_repo }}"
+            dest: "{{ ps_curobo_dir }}/src"
+            version: "{{ curobo_ref }}"
+            force: true
+          become: true
+          become_user: "{{ planserver_user }}"
+          register: ps_curobo_git
+          when: ps_curobo_build | bool
+
+        # The environment is rebuilt only when one of these changed (or it is missing).
+        - name: What the cuRobo environment is built from
+          ansible.builtin.set_fact:
+            ps_curobo_marker: >-
+              curobo={{ ps_curobo_git.after | default('') }} python={{ curobo_python_version }}
+              torch={{ curobo_torch }} index={{ curobo_torch_index }} extra={{ curobo_cuda_extra }}
+          when: ps_curobo_build | bool
+
+        - name: What the existing cuRobo environment was built from
+          ansible.builtin.command: "cat {{ ps_curobo_dir }}/venv/.surf-build"
+          register: ps_curobo_marker_old
+          changed_when: false
+          failed_when: false
+          when: ps_curobo_build | bool
+
+        - name: Remove a cuRobo environment built from something else
+          ansible.builtin.file:
+            path: "{{ ps_curobo_dir }}/venv"
+            state: absent
+          register: ps_curobo_removed
+          when:
+            - ps_curobo_build | bool
+            - (ps_curobo_marker_old.stdout | default('') | trim) != (ps_curobo_marker | trim)
+
+        # First run: downloads torch with its CUDA libraries (several GB, minutes).
+        - name: Build the cuRobo environment
+          ansible.builtin.shell: |
+            set -euxo pipefail
+            uv="{{ ps_uv }}"
+            py="{{ ps_curobo_dir }}/venv/bin/python"
+            "$uv" venv --python "{{ curobo_python_version }}" "{{ ps_curobo_dir }}/venv"
+            "$uv" pip install --python "$py" --extra-index-url "{{ curobo_torch_index }}" "{{ curobo_torch }}"
+            "$uv" pip install --python "$py" setuptools setuptools_scm wheel
+            "$uv" pip install --python "$py" --no-build-isolation -e "{{ ps_curobo_dir }}/src[{{ curobo_cuda_extra }}]"
+            # What the curobo scripts of the planner import besides torch (reproduceren.qmd).
+            "$uv" pip install --python "$py" numpy scipy "zarr>=3" pyyaml
+            printf '%s\n' "{{ ps_curobo_marker | trim }}" > "{{ ps_curobo_dir }}/venv/.surf-build"
+          args:
+            executable: /bin/bash
+          environment:
+            UV_CACHE_DIR: "{{ planserver_dir }}/uv-cache"
+            UV_PYTHON_INSTALL_DIR: "{{ planserver_dir }}/python"
+            HOME: "{{ planserver_dir }}"
+          become: true
+          become_user: "{{ planserver_user }}"
+          register: ps_curobo_env
+          changed_when: true
+          when:
+            - ps_curobo_build | bool
+            - (ps_curobo_marker_old.stdout | default('') | trim) != (ps_curobo_marker | trim)
+
+        # As the service user: a reused environment under a home directory (0750) or with
+        # a Python that links into someone else's uv directory fails here, not in systemd.
+        - name: Check the cuRobo environment as the service user
+          ansible.builtin.command:
+            cmd: >-
+              {{ ps_curobo_python }} -c "import torch, curobo, planner.data.curobo;
+              print('torch', torch.__version__, 'cuda', torch.version.cuda, 'gpu', torch.cuda.is_available(),
+              'curobo', curobo.__version__)"
+            chdir: "{{ ps_planner_dir }}"
+          environment:
+            PYTHONPATH: "{{ ps_planner_dir }}/src"
+            HOME: "{{ planserver_dir }}"
+          become: true
+          become_user: "{{ planserver_user }}"
+          register: ps_curobo_check
+          changed_when: false
+          failed_when: false
+
+        - name: Stop when the cuRobo environment does not work
+          ansible.builtin.fail:
+            msg:
+              - "{{ ps_curobo_python }} cannot import torch, curobo and planner.data.curobo as {{ planserver_user }}:"
+              - "{{ (ps_curobo_check.stderr_lines | default([]))[-3:] | join(' / ') or ps_curobo_check.msg | default('') }}"
+              - >-
+                {{ 'A reused environment (planserver_curobo_python) must be readable and executable for '
+                   ~ planserver_user ~ ', including its directories and the Python it links to; one under
+                   /home usually is not. Leave planserver_curobo_python empty to build one.'
+                   if not (ps_curobo_build | bool) else 'Check the output of "Build the cuRobo environment".' }}
+          when:
+            - ps_curobo_check.rc != 0
+            - ps_gpu_ready | bool
+
+        - name: Warn when the check could not run without a driver
+          ansible.builtin.debug:
+            msg: >-
+              WARNING: the cuRobo environment could not be checked without a loaded driver
+              ({{ (ps_curobo_check.stderr_lines | default(['?']))[-1:] | join('') }}). It is checked
+              again when the component runs after the reboot.
+          when:
+            - ps_curobo_check.rc != 0
+            - not (ps_gpu_ready | bool)
+
+        - name: Report the cuRobo environment
+          ansible.builtin.debug:
+            msg: "cuRobo worker: {{ ps_curobo_python }} ({{ ps_curobo_check.stdout | default('') | trim }})"
+          when: ps_curobo_check.rc == 0
 
     # ------------------------------------------------------------ 4. What it serves
     - name: Check the block directories
@@ -248,6 +493,20 @@
         dest: /usr/local/bin/planserver
         mode: "0755"
 
+    - name: Warm-up after every start (gpu mode)
+      ansible.builtin.template:
+        src: templates/planserver-warmup.py.j2
+        dest: "{{ planserver_dir }}/warmup.py"
+        mode: "0644"
+      register: ps_warmup
+      when: ps_mode == 'gpu'
+
+    - name: No warm-up in the cpu mode
+      ansible.builtin.file:
+        path: "{{ planserver_dir }}/warmup.py"
+        state: absent
+      when: ps_mode != 'gpu'
+
     - name: Install the plan server systemd unit
       ansible.builtin.template:
         src: templates/planserver.service.j2
@@ -255,13 +514,33 @@
         mode: "0644"
       register: ps_unit
 
+    # gpu mode with a driver that is not loaded yet: enabled, so it starts after the reboot.
+    - name: Whether the plan server can start now
+      ansible.builtin.set_fact:
+        ps_can_start: "{{ ps_mode != 'gpu' or (ps_gpu_ready | default(false) | bool) }}"
+        ps_restart: >-
+          {{ ps_unit.changed or ps_sync.changed or (ps_git.changed | default(false))
+             or (ps_warmup.changed | default(false)) or (ps_curobo_env.changed | default(false)) }}
+
     - name: Enable + (re)start planserver.service (autostart)
       ansible.builtin.systemd:
         name: planserver.service
         enabled: true
         daemon_reload: true
-        state: "{{ 'restarted' if (ps_unit.changed or ps_sync.changed or (ps_git.changed | default(false))) else 'started' }}"
-      when: planserver_autostart | bool
+        state: "{{ 'restarted' if ps_restart | bool else 'started' }}"
+      when:
+        - planserver_autostart | bool
+        - ps_can_start | bool
+      tags: [service]
+
+    - name: Enable planserver.service for the next boot (driver not loaded yet)
+      ansible.builtin.systemd:
+        name: planserver.service
+        enabled: true
+        daemon_reload: true
+      when:
+        - planserver_autostart | bool
+        - not (ps_can_start | bool)
       tags: [service]
 
     - name: Install planserver.service without starting it (on demand)
@@ -272,23 +551,35 @@
       when: not (planserver_autostart | bool)
       tags: [service]
 
+    # gpu: also cuRobo among the planners. The start already waited for the warm-up.
     - name: Wait until the plan server answers
       ansible.builtin.uri:
         url: "http://{{ '127.0.0.1' if planserver_bind_address == '0.0.0.0' else planserver_bind_address }}:{{ planserver_port }}/health"
         return_content: true
       register: ps_health
-      until: ps_health.status == 200
-      retries: 30
-      delay: 2
-      when: planserver_autostart | bool
+      until: >-
+        ps_health.status == 200
+        and (ps_mode != 'gpu' or 'curobo' in (ps_health.json.planners | default([])))
+      retries: "{{ 60 if ps_mode == 'gpu' else 30 }}"
+      delay: "{{ 5 if ps_mode == 'gpu' else 2 }}"
+      when:
+        - planserver_autostart | bool
+        - ps_can_start | bool
       tags: [service]
 
     - name: How to reach the plan server
       ansible.builtin.debug:
         msg:
+          - "Mode: {{ ps_mode }}{{ (' (auto: ' ~ (ps_pci_gpus.stdout_lines | length) ~ ' NVIDIA GPU(s))') if ps_mode_asked == 'auto' else '' }}"
           - "{{ 'Starts at boot.' if (planserver_autostart | bool) else 'On demand: sudo systemctl start planserver (stop: sudo systemctl stop planserver)' }}"
+          - "{{ ('cuRobo worker: ' ~ ps_curobo_python) if ps_mode == 'gpu' else 'No cuRobo (cpu mode).' }}"
+          - >-
+            {{ 'NOT STARTED: the NVIDIA driver is not loaded yet. Reboot once (sudo systemctl reboot -i); it starts at boot.'
+               if not (ps_can_start | bool) else '' }}
           - "URL: http://{{ planserver_bind_address }}:{{ planserver_port }} (planner {{ ps_commit.stdout | default('?') }} from {{ ps_planner_dir }})"
-          - "{{ ('Planners: ' ~ (ps_health.json.planners | join(', ')) ~ '; worlds: ' ~ ps_health.json.n_worlds) if (ps_health.json is defined) else 'Not started, so not checked.' }}"
+          - >-
+            {{ ('Planners: ' ~ (ps_health.json.planners | join(', ')) ~ '; worlds: ' ~ ps_health.json.n_worlds)
+               if (ps_health.json is defined) else 'Not started, so not checked.' }}
           - "Blocks: {{ ps_blocks | join(' ') if ps_blocks | length > 0 else 'the fixture in the repository (set planserver_blocks for the dataset)' }}"
           - "Model: {{ ps_checkpoint if ps_checkpoint | length > 0 else 'none (set planserver_checkpoint); only stored trajectories' }}"
           - "On the workspace: planserver health | planserver worlds | planserver plan --world <id> --goal <n>"

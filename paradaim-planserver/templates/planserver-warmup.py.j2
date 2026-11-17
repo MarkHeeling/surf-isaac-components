@@ -1,0 +1,56 @@
+# Managed by the paradaim-planserver SURF component (planserver_mode gpu).
+# Run by planserver.service after every start (ExecStartPost, best effort): waits
+# until the server answers, then asks cuRobo for one plan, so the first real request
+# does not pay for the kernel compilation and the solver set-up. Exit code 0 also when
+# the plan itself fails: a refused plan has warmed the solver just as well.
+import sys
+import time
+
+from planner.planserver.client import PlanClient
+from planner.planserver.protocol import PlanError, PlanRequest
+
+URL = "http://{{ '127.0.0.1' if planserver_bind_address == '0.0.0.0' else planserver_bind_address }}:{{ planserver_port }}"
+DEADLINE = time.monotonic() + {{ planserver_warmup_timeout | int }}
+
+
+def log(msg: str) -> None:
+    print(f"warm-up: {msg}", flush=True)
+
+
+client = PlanClient(URL, timeout=10.0)
+while True:
+    try:
+        planners = client.planners()
+        break
+    except Exception as exc:  # not listening yet
+        if time.monotonic() > DEADLINE:
+            log(f"no answer from {URL} in time ({exc}); skipped")
+            sys.exit(0)
+        time.sleep(2)
+
+if "curobo" not in planners:
+    log(f"no curobo among the planners {planners}; skipped")
+    sys.exit(0)
+
+worlds = client.worlds()
+if not worlds:
+    log("no worlds; skipped")
+    sys.exit(0)
+world_id = worlds[0]["world_id"]
+info = client.world_info(world_id)
+if not info.goals:
+    log(f"{world_id} has no goals; skipped")
+    sys.exit(0)
+goal_id = int(info.goals[0]["goal_id"])
+
+client = PlanClient(URL, timeout=max(30.0, DEADLINE - time.monotonic()))
+t0 = time.perf_counter()
+try:
+    client.plan(PlanRequest(planner="curobo", world_id=world_id, goal_id=goal_id,
+                            start=info.home, world_hash=info.world.hash))
+    outcome = "plan"
+except PlanError as exc:
+    outcome = f"no plan ({exc.status})"
+except Exception as exc:  # timeout, connection reset: leave it to the first request
+    outcome = f"failed ({exc})"
+log(f"curobo {world_id} goal {goal_id}: {outcome} in {time.perf_counter() - t0:.1f} s")

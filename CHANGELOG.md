@@ -4,6 +4,29 @@ Notable changes to the SURF Research Cloud components in this repository.
 Images are pinned by digest, so a "version" is the pinned image plus this history.
 Dates are when the change landed in the repo.
 
+## 2026-11-17 — Plan server: gpu mode with cuRobo, and planserver_mode auto
+
+- **`paradaim-planserver`: `planserver_mode=gpu` works.** The playbook builds a cuRobo
+  environment in `/opt/planserver/curobo` (cuRobo `78fd485f` = `0.8.0.post1.dev43`, Python
+  3.11, torch from the cu130 index, the recipe of the planner's `reproduceren.qmd`) or uses an
+  existing one (`planserver_curobo_python`), checks it as the service user, and starts the
+  server with `--curobo-python <that python>` (`planserver_curobo_python_flag`). After every
+  start a warm-up asks cuRobo for one plan; the health check requires `curobo` among the
+  planners. New parameters: see the README.
+- **New default `planserver_mode=auto`:** `gpu` when the workspace has an NVIDIA GPU (PCI bus),
+  otherwise `cpu`. With it, the "Robot test server" item can get SURF's CUDA component and a GPU
+  flavour next to its CPU flavours. On a CPU flavour nothing changes: the unit is byte for byte
+  the same as before (checked by rendering both templates), so a rerun does not restart the server.
+- gpu mode stops with a message when the planner checkout has no `--curobo-python` (a
+  `planner_ref` older than the cuRobo backend), or when the driver supports less than CUDA 13.
+  With a driver that is not loaded yet it installs and enables the service but starts it only
+  after a reboot.
+- `planserver_extra_args` (both modes): extra arguments for `planserver.py serve`.
+- README: the catalog items as they are now (Isaac without the plan server; the robot test server
+  with CPU and GPU flavours).
+- Not run on a workspace: `ansible-playbook --syntax-check` and `ansible-lint` (clean for this
+  component) only. The cuRobo build, the driver check, the warm-up and the backend option are untested.
+
 ## 2026-11-12 — Plan server moves to port 8780
 
 - `planserver_port` defaults to `8780` (was `8770`). On the Isaac workstation the planner's

@@ -9,7 +9,7 @@ SURF Research Cloud **components** (Ansible playbooks) for Isaac Sim / Lab / Are
 | `wireguard` | `wireguard/install-wireguard.yml` | WireGuard server on the workspace. The other components listen on its tunnel IP, so only one UDP port is public |
 | `nvidia-isaac-sim-lab-arena` | `nvidia-isaac-sim-lab-arena/install-isaac.yml` | Headless GPU workstation running Isaac Sim / Lab / Arena as a container, pinned by digest |
 | `universal-robots-ursim` | `universal-robots-ursim/install-ursim.yml` | **Optional.** Universal Robots URSim (e-Series simulator) as a container, to test ur_rtde / the ROS driver / cuRobo before the real arm |
-| `paradaim-planserver` | `paradaim-planserver/install-planserver.yml` | **Optional.** Plan server of the Paradaim planner: answers a laptop next to the robot with a joint trajectory (stored expert trajectories and the model on the CPU; cuRobo on a GPU is planned) |
+| `paradaim-planserver` | `paradaim-planserver/install-planserver.yml` | **Optional.** Plan server of the Paradaim planner: answers a laptop next to the robot with a joint trajectory (stored expert trajectories and the model on the CPU; on a GPU flavour also cuRobo) |
 | `nvidia-omni-asset-cache` | `nvidia-omni-asset-cache/install-asset-cache.yml` | **Not built yet** local cache of the Omniverse/Isaac assets on persistent storage |
 
 ### Catalog items
@@ -18,9 +18,8 @@ A catalog item runs its components in order. `wireguard` goes first: the compone
 
 | Catalog item | Components, in order | Flavour |
 |---|---|---|
-| Isaac workstation | SURF's CUDA component → `wireguard` → `nvidia-isaac-sim-lab-arena` → `universal-robots-ursim` → `paradaim-planserver` (the last two optional) | GPU |
-| Robot test server | `wireguard` → `universal-robots-ursim` → `paradaim-planserver` (`planserver_mode=cpu`) | CPU only |
-| Plan server with cuRobo (planned) | SURF's CUDA component → `wireguard` → `universal-robots-ursim` → `paradaim-planserver` (`planserver_mode=gpu`) | 1× RTX 6000 |
+| Isaac workstation | SURF's CUDA component → `wireguard` → `nvidia-isaac-sim-lab-arena` → `universal-robots-ursim` (optional). No plan server: that runs on its own workspace | GPU (A10, RTX 6000) |
+| Robot test server | SURF's CUDA component → `wireguard` → `universal-robots-ursim` → `paradaim-planserver` (`planserver_mode=auto`) | CPU flavours (cpu mode) and 1× RTX 6000 (gpu mode, cuRobo) |
 
 In the access rules of every item open only the WireGuard port (`51820/UDP`) and SSH.
 
@@ -234,12 +233,13 @@ URSim always boots in the same pose, (0, -90, 90, -90, -90, 0) degrees. In the m
 
 The plan server of the [Paradaim planner](https://github.com/MarkHeeling/planner) (`scripts/planserver.py`) as a systemd service. A laptop next to the robot sends a world, a start configuration and a goal over HTTP and gets a joint trajectory back; the laptop validates it (start, limits, collision, world hash) and executes it. The server never moves anything itself, and it answers one plan at a time.
 
-**Catalog item order:** `wireguard → (universal-robots-ursim →) paradaim-planserver`.
+**Catalog item order:** `(CUDA component →) wireguard → (universal-robots-ursim →) paradaim-planserver`.
 
 | `planserver_mode` | Planners | Needs |
 |---|---|---|
-| `cpu` (default) | `stored` (the expert trajectories of the dataset) and, with a checkpoint, `model` | no GPU |
-| `gpu` | adds `curobo` and `model_curobo` (the model's samples as seeds for cuRobo) | **not available yet**; the playbook stops with a message |
+| `auto` (default) | `gpu` when the workspace has an NVIDIA GPU (seen on the PCI bus, also before the driver is loaded), otherwise `cpu`. One catalog item then serves CPU and GPU flavours | — |
+| `cpu` | `stored` (the expert trajectories of the dataset) and, with a checkpoint, `model` | no GPU |
+| `gpu` | adds `curobo` and `model_curobo` (the model's samples as seeds for cuRobo) | an NVIDIA GPU with a driver for CUDA 13 (580 or newer; SURF's CUDA component before this one), and a `planner_ref` with the cuRobo backend of the plan server |
 
 A laptop that runs the model itself still uses the server for the worlds, the stored trajectories and, later, cuRobo: for `model_curobo` it sends its own samples as seeds in the request.
 
@@ -247,7 +247,7 @@ A laptop that runs the model itself still uses the server for the worlds, the st
 
 | Parameter | Default | Description |
 |---|---|---|
-| `planserver_mode` | `cpu` | `cpu` or `gpu` (see above) |
+| `planserver_mode` | `auto` | `auto`, `cpu` or `gpu` (see above). Set it per workspace with an interactive parameter, or leave `auto` |
 | `planner_repo` / `planner_ref` | `https://github.com/MarkHeeling/planner.git` / `master` | Repository and branch, tag or commit to serve |
 | `planner_git_token` | `""` | For a private repository: a read-only GitHub token as a **collaboration secret**. Used for the clone only and not left in `.git/config` |
 | `planner_checkout` | `""` | Serve from a checkout that is already on the workspace (e.g. the one used for training) instead of cloning. The component never runs git in it |
@@ -260,6 +260,27 @@ A laptop that runs the model itself still uses the server for the worlds, the st
 | `planserver_port` | `8780` | HTTP port. Not `8770`/`8771`: the planner's dataset server (`scripts/dataset_foxglove.py`) listens there on the Isaac workstation |
 | `planserver_autostart` | `true` | Start at boot (the `cpu` mode is light). `false` = installed but stopped: `sudo systemctl start planserver` |
 | `planserver_user` | `planserver` | System user the service runs as. It needs read access to the block directories and the checkpoint |
+| `planserver_extra_args` | `""` | Extra arguments for `planserver.py serve`, as one string (both modes) |
+
+**gpu mode (cuRobo)**
+
+| Parameter | Default | Description |
+|---|---|---|
+| `planserver_curobo_python` | `""` | Python of an existing cuRobo environment to use instead of building one, e.g. `/data/isaac-data/curobo/venv/bin/python`. The service user must be able to run it, with every directory above it and the Python it links to; a uv venv under `/home` usually fails that (`/home/*` is `0750`). The playbook checks it as the service user. Empty = build one |
+| `planserver_curobo_python_flag` | `--curobo-python` | The option of `planserver.py serve` that takes that Python (the cuRobo backend of the planner). The playbook stops when the planner checkout does not have it |
+| `planserver_curobo_dir` | `/opt/planserver/curobo` | Where the built environment goes: cuRobo source in `src/`, environment in `venv/` (boot disk, several GB: torch with its CUDA libraries) |
+| `curobo_repo` / `curobo_ref` | NVlabs/curobo / `78fd485f` | cuRobo to build. `78fd485f` is `0.8.0.post1.dev43`, the version in the provenance of the v5 expert data; the playbook prints the version it got. A full clone: cuRobo takes its version from the git history |
+| `curobo_python_version` | `3.11` | Python of the environment (uv downloads it) |
+| `curobo_torch` / `curobo_torch_index` | `torch>=2.13` / `https://download.pytorch.org/whl/cu130` | PyTorch and the index it comes from |
+| `curobo_cuda_extra` | `cu13` | cuRobo's extra: `cu13` (driver 580+) or `cu12` (then also a cu12x torch index) |
+| `planserver_cuda_visible_devices` | `""` | GPU(s) the server sees, e.g. `0`. Empty = all |
+| `planserver_warmup_timeout` | `600` | Seconds the warm-up plan after a start may take |
+
+The cuRobo environment follows the planner's own recipe (`docs/bijlagen/reproduceren.qmd`): its own Python environment, never mixed with the planner's; torch from the PyTorch index, cuRobo editable with `--no-build-isolation`, plus numpy, scipy, zarr and pyyaml for `planner.data.curobo`. cuRobo compiles its kernels at run time, so no CUDA toolkit (`nvcc`) is needed. The environment is rebuilt only when `curobo_ref` (the commit it resolves to), the Python, the torch spec, the index or the extra changes. The unit puts the planner's `src` first on `PYTHONPATH` (like `scripts/gpu.sh`), so the worker runs the code of the checkout that is served, also with a reused environment that has `planner` installed from somewhere else.
+
+After every start, `planserver.service` asks cuRobo for one plan in the first world (`/opt/planserver/warmup.py`, best effort; `systemctl start` waits for it), so the first request of a laptop does not pay for the kernel compilation. The playbook's health check then also requires `curobo` among the planners.
+
+**First boot of a GPU flavour:** when the driver of the CUDA component is not loaded yet (`nvidia-smi` fails), the playbook builds everything and enables the service, but does not start it. Reboot once (`sudo systemctl reboot -i`); the service starts at boot. Rerun the component (or `sudo systemctl restart planserver`) afterwards to see the health check.
 
 ### Access
 
@@ -272,7 +293,7 @@ The server has **no login and no TLS**: it is meant for the tunnel only. Never b
 
 On the laptop, in the planner repository: `uv run python scripts/planserver.py health --url http://10.8.0.1:8780`, and `scripts/ursim_foxglove.py --planserver http://10.8.0.1:8780` for the Foxglove controls. Logs: `journalctl -u planserver -f` (one line per request with its duration and outcome).
 
-To serve a newer planner, rerun the component: it updates the clone to `planner_ref`, syncs the Python environment with the lockfile and restarts the service.
+To serve a newer planner, rerun the component: it updates the clone to `planner_ref`, syncs the Python environment with the lockfile and restarts the service. On a GPU workspace: `planserver plan --planner curobo --world <id> --goal <n> --start home` asks cuRobo from the workspace itself.
 
 ---
 

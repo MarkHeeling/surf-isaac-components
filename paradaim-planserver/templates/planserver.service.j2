@@ -10,6 +10,15 @@ User={{ planserver_user }}
 WorkingDirectory={{ ps_planner_dir }}
 Environment=PYTHONUNBUFFERED=1
 Environment=HOME={{ planserver_dir }}
+{% if ps_mode == 'gpu' %}
+# cuRobo runs as a worker in its own Python environment ({{ ps_curobo_python }}).
+# The planner code of this checkout goes first, also when that environment has
+# planner installed editable from another checkout (scripts/gpu.sh does the same).
+Environment=PYTHONPATH={{ ps_planner_dir }}/src
+{% if planserver_cuda_visible_devices | string | trim | length > 0 %}
+Environment=CUDA_VISIBLE_DEVICES={{ planserver_cuda_visible_devices | string | trim }}
+{% endif %}
+{% endif %}
 ExecStart={{ ps_venv }}/bin/python scripts/planserver.py serve \
     --host {{ planserver_bind_address }} --port {{ planserver_port }}
 {%- if ps_blocks | length > 0 %} \
@@ -19,12 +28,25 @@ ExecStart={{ ps_venv }}/bin/python scripts/planserver.py serve \
     --checkpoint {{ ps_checkpoint }} \
     --esdf-cache-dir {{ planserver_esdf_cache }}
 {%- endif %}
+{%- if ps_mode == 'gpu' %} \
+    {{ planserver_curobo_python_flag }} {{ ps_curobo_python }}
+{%- endif %}
+{%- if planserver_extra_args | string | trim | length > 0 %} \
+    {{ planserver_extra_args | string | trim }}
+{%- endif %}
 
 Restart=on-failure
 RestartSec=5
+{% if ps_mode == 'gpu' %}
+# One cuRobo plan right after the start (best effort, "-"): the first request of a
+# laptop then does not pay for the kernel compilation and the solver set-up. The
+# start counts as done when it returns, so systemctl start waits for it.
+ExecStartPost=-{{ ps_venv }}/bin/python {{ planserver_dir }}/warmup.py
+TimeoutStartSec={{ (planserver_warmup_timeout | int) + 120 }}
+{% endif %}
 # Reads the dataset and the checkpoint, writes only its cache.
 ProtectSystem=strict
-ReadWritePaths={{ planserver_esdf_cache }} {{ planserver_dir }}
+ReadWritePaths={{ planserver_esdf_cache }} {{ planserver_dir }}{{ (' ' ~ ps_curobo_dir) if ps_curobo_rw | default(false) else '' }}
 ProtectHome=read-only
 PrivateTmp=true
 NoNewPrivileges=true
